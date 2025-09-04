@@ -1,0 +1,11 @@
+.ipynb_checkpoints
+outputs
+*.zip
+__pycache__
+.DS_Store
+local
+BBH/outputs
+.vscode/launch.json
+.vscode/settings.json
+gsm8k/prompts.txt
+MATH/data

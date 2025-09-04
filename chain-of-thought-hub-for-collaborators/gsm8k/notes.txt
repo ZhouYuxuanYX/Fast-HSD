@@ -1,0 +1,46 @@
+1. can't use pytorch:latest qa environment, because the transformers version is too old,
+use the llm:latest works fine
+the newer version of transformers, i.e., 4.38.1 pack all the generate configuraiton into a config class,
+so we have to additionally modify the configuration_utils.py
+
+pip install openai tenacity
+
+# find the installation location
+pip show transformers
+
+/usr/local/lib/python3.10/dist-packages
+
+# check the version
+pip freeze | grep transformers
+
+cp -r /home/c02yuzh/CISPA-projects/rectified_softmax_ml-2023/chain-of-thought-hub-main/gsm8k/transformers_4_38_1/generation/* /usr/local/lib/python3.10/dist-packages/transformers/generation/
+
+don't know the reason, but using sbatch will fail with this error:
+UnicodeEncodeError: 'ascii' codec can't encode character '\u2019' in position 8: ordinal not in range(128)
+
+so just use interactive mode to run!!!
+
+2. eval_opensource_llm.py has been added a stopping criteria to prevent Llama-3 models to create question answer pattern after already answering the actual question,
+which leads to incorrect evaluation
+
+911018911018911018    """
+    GenerationConfig {
+      "bos_token_id": 128000,
+      "do_sample": true,
+      "eos_token_id": 128001,
+      "max_length": 4096,
+      "temperature": 0.6,
+      "top_p": 0.9
+    }
+    """
+and default dola generation config on gsm8k is found at gsm8k_eval.py:
+    parser.add_argument("--top_p", type=float, default=0.95)
+    parser.add_argument("--top_k", type=int, default=0)
+    parser.add_argument("--temperature", type=float, default=0.9)
+
+So the evaluation results of dola paper is problematic, due to the lack of std values
+
+4. the core code of dola sampling is defined in transformers-4.28.1/src/transformers/generation/utils.py on its github homepage
+
+5. Plan: evaluate the effect of adaptive sampling on GSM8K, which might help my rebuttal of the acl submission. Moreover, it can
+give me the initial feedback of how much impact does such truncation sampling have on this task
