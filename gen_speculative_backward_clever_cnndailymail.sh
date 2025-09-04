@@ -2,7 +2,6 @@
 model_names=(Qwen_72B)
 tasks=(cnndailymail)
 method=speculative_backward_clever
-huggingface-cli login --token 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 --add-to-git-credential
 
 cd /home/c02yuzh/CISPA-projects/rectified_softmax_ml-2023/llm_decoding-main
 echo "speculative backward clever"
