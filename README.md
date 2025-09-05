@@ -58,6 +58,10 @@ CUDA_VISIBLE_DEVICES=3 python3 eval_speculative_decoding_llm.py  --speculative -
 ```
 ### 4. Quick Start on CNN Daily and HumanEval Experiments
 
+```
+cd /root/autodl-tmp/llm_decoding-main
+```
+
 **Tokenwise**
 ```
 bash gen_speculative_cnndailymail.sh
