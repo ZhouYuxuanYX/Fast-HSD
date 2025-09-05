@@ -28,7 +28,7 @@ ii. Then, replace the file under transformer packages.
             |__utils.py   
         |__cache_utils.py
 
-### Quick Start on experiments
+### Quick Start on GSM8K Experiments
 
 ```
 cd autodl-tmp/chain-of-thought-hub-for-collaborators/gsm8k
