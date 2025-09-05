@@ -69,6 +69,27 @@ python compute_speculative_stats.py
 cd /root/autodl-tmp/llm_decoding-main
 ```
 
+
+
+**Tokenwise**
+```
+bash gen_speculative_cnndailymail.sh
+```
+
+**Blockwise**
+```
+gen_speculative_blockwise_cnndailymail.sh
+```
+
+**Naive HSD**
+```
+bash gen_speculative_naivehsd_cnndailymail.sh
+```
+
+**Fast HSD**
+```
+bash gen_speculative_fashsd_human_eval.sh
+```
 ```
 CUDA_VISIBLE_DEVICES=0
 model_names=(Qwen_72B)
@@ -96,25 +117,7 @@ for model_name in ${model_names[@]}; do
 done
 ```
 
-**Tokenwise**
-```
-bash gen_speculative_cnndailymail.sh
-```
 
-**Blockwise**
-```
-gen_speculative_blockwise_cnndailymail.sh
-```
-
-**Naive HSD**
-```
-bash gen_speculative_naivehsd_cnndailymail.sh
-```
-
-**Fast HSD**
-```
-bash gen_speculative_fashsd_human_eval.sh
-```
 **🔧Evaluation**
 ```
 python compute_speculative_stats.py
