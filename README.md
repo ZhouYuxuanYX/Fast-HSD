@@ -56,6 +56,13 @@ CUDA_VISIBLE_DEVICES=2 python3 eval_speculative_decoding_llm.py --speculative --
 ```
 CUDA_VISIBLE_DEVICES=3 python3 eval_speculative_decoding_llm.py  --speculative --backward --clever --approxi -gamma 1.0 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee fasthsd_gamma1_tmp1_top1_leni1.txt
 ```
+
+**🔧Evaluation**
+```
+python compute_speculative_stats.py
+```
+
+
 ### 4. Quick Start on CNN Daily and HumanEval Experiments
 
 ```
@@ -77,9 +84,12 @@ gen_speculative_blockwise_cnndailymail.sh
 bash gen_speculative_naivehsd_cnndailymail.sh
 ```
 
-
 **Fast HSD**
 ```
 bash gen_speculative_fashsd_human_eval.sh
+```
+**🔧Evaluation**
+```
+python compute_speculative_stats.py
 ```
 
