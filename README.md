@@ -1,5 +1,4 @@
-# Environment Setup
-### 1. Key requirement
+### 1. Environment Setup
 CUDA 11.8
 Python 3.8
 Pytorch 2.1.0
