@@ -13,7 +13,36 @@ CUDA 11.8
 Python 3.8
 Pytorch 2.1.0
 
+```
+conda create -n xxx python=3.8
+```
+```
+conda activate xxx
+```
+
+```
 conda install pytorch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 pytorch-cuda=11.8 -c pytorch -c nvidia
+```
+
+```
+pip install transformers==4.46.3
+```
+
+```
+pip install datasets==2.21.0
+```
+
+```
+pip install llmcompressor
+```
+
+```
+pip install optimum
+```
+
+```
+pip install auto-gptq
+```
 
 Other requirements, please refer to requirement.txt
 
