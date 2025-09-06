@@ -58,22 +58,22 @@ If you want to test the default setting (multi GPU).
 
 **Tokenwise**
 ```
-CUDA_VISIBLE_DEVICES=0 python3 eval_speculative_decoding_llm.py  --speculative --gamma 10 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee tokenwise_gamma1_tmp1_top1_leni1.txt
+CUDA_VISIBLE_DEVICES=0 python3 eval_speculative_decoding_llm.py  --speculative --gamma 10 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee tokenwise_gamma10_tmp1_top1_leni1.txt
 ```
 
 **Blockwise**
 ```
-CUDA_VISIBLE_DEVICES=1 python3 eval_speculative_decoding_llm.py  --speculative --blockwise --gamma 10 --temperature 1.0 --top_p 1.0 2>&1 | tee blockwise_gamma1_tmp1_top1.txt
+CUDA_VISIBLE_DEVICES=1 python3 eval_speculative_decoding_llm.py  --speculative --blockwise --gamma 10 --temperature 1.0 --top_p 1.0 2>&1 | tee blockwise_gamma10_tmp1_top1.txt
 ```
 
 **Naive HSD**
 ```
-CUDA_VISIBLE_DEVICES=2 python3 eval_speculative_decoding_llm.py --speculative --backward --gamma 10 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee hsd_gamma1_tmp1_top1_leni1.txt
+CUDA_VISIBLE_DEVICES=2 python3 eval_speculative_decoding_llm.py --speculative --backward --gamma 10 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee hsd_gamma10_tmp1_top1_leni1.txt
 ```
 
 **Fast HSD**
 ```
-CUDA_VISIBLE_DEVICES=3 python3 eval_speculative_decoding_llm.py  --speculative --backward --clever --approxi --gamma 10 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee fasthsd_gamma1_tmp1_top1_leni1.txt
+CUDA_VISIBLE_DEVICES=3 python3 eval_speculative_decoding_llm.py  --speculative --backward --clever --approxi --gamma 10 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee fasthsd_gamma10_tmp1_top1_leni1.txt
 ```
 
 **🔧Evaluation**
