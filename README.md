@@ -1,13 +1,4 @@
-# Quick Start
-
-## A. Make sure you have
-1. chain-of-thought-hub-for-collaborators
-2. llm_decoding-main
-3. clever_single-draft
-4. requirement.txt
-
-
-## B. Environment building
+# Environment Setup
 ### 1. Key requirement
 CUDA 11.8
 Python 3.8
