@@ -55,11 +55,11 @@ cd autodl-tmp/chain-of-thought-hub-for-collaborators/gsm8k
 ```
 
 You may comment out these lines if you use default download link cache for huggingface.
-、、、
+
+```
 os.environ['HF_HOME'] = '/root/autodl-tmp/cache'
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com/'
-、、、
-
+```
 
 
 If you want to test the default setting (multi GPU).
@@ -103,9 +103,10 @@ cd /root/autodl-tmp/llm_decoding-main
 ```
 
 You may comment out this line if you use default cache for huggingface.
-、、、
+
+```
 os.environ['HF_HOME'] = '/root/autodl-tmp/cache'
-、、、
+```
 
 
 **Tokenwise**
