@@ -36,6 +36,7 @@ pip install auto-gptq
 
 Other requirements, please refer to requirement.txt
 
+
 ### 2. Replace essential files in transformers 
 i. Make sure your transformers version is 4.46.3
     example file path: miniconda3/envs/vla/lib/python3.8/site-packages/transformers
@@ -53,8 +54,15 @@ ii. Then, replace the file under transformer packages.
 cd autodl-tmp/chain-of-thought-hub-for-collaborators/gsm8k
 ```
 
-If you want to test the default setting (multi GPU).
+You may comment out these lines if you use default download link cache for huggingface.
+、、、
+os.environ['HF_HOME'] = '/root/autodl-tmp/cache'
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com/'
+、、、
 
+
+
+If you want to test the default setting (multi GPU).
 
 **Tokenwise**
 ```
@@ -76,11 +84,17 @@ CUDA_VISIBLE_DEVICES=2 python3 eval_speculative_decoding_llm.py --speculative --
 CUDA_VISIBLE_DEVICES=3 python3 eval_speculative_decoding_llm.py  --speculative --backward --clever --approxi --gamma 10 --temperature 1.0 --top_p 1.0 --lenience 1.0 2>&1 | tee fasthsd_gamma10_tmp1_top1_leni1.txt
 ```
 
-**🔧Evaluation**
+**🔧 Evaluation**
 ```
 python compute_speculative_stats.py
 ```
 
+**Variables**
+
+Line 46 to change the target model size (14B, 32B, 72B)
+```
+    parser.add_argument('--target-model',  default='Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8', help='must be complex or original')
+```
 
 ### 4. Quick Start on CNN Daily and HumanEval Experiments
 
@@ -88,6 +102,10 @@ python compute_speculative_stats.py
 cd /root/autodl-tmp/llm_decoding-main
 ```
 
+You may comment out this line if you use default cache for huggingface.
+、、、
+os.environ['HF_HOME'] = '/root/autodl-tmp/cache'
+、、、
 
 
 **Tokenwise**
@@ -107,12 +125,14 @@ bash gen_speculative_naivehsd_cnndailymail.sh
 
 **Fast HSD**
 ```
-bash gen_speculative_fashsd_human_eval.sh
+bash gen_speculative_fasthsd_human_eval.sh
 ```
+
 ```
 CUDA_VISIBLE_DEVICES=0
 model_names=(Qwen_72B)
-tasks=(cnndailymail)
+tasks=(human_eval)
+lenience=1.0
 method=speculative_fasthsd
 
 for model_name in ${model_names[@]}; do
@@ -121,19 +141,20 @@ for model_name in ${model_names[@]}; do
         
         python3 evaluate_speculative_decoding.py \
                 --infile ./data/${task}/${model_name}_input.jsonl\
-                --outfile ./results/${task}/${model_name}_${method}_lenience_1.jsonl\
+                --outfile ./results/${task}/${model_name}_${method}_lenience_${lenience}.jsonl\
                 --model ${model_path}\
                 --gpus_per_model 4\
                 --world_size 4\
                 --batch_size 1\
-		        --max_new_tokens 512 \
-                --speculative \
+		        --max_new_tokens 512\
+                --speculative\
                 --backward \
                 --clever \
                 --approxi \
-                --lenience 1.0
+                --lenience ${lenience}
     done
 done
+
 ```
 
 
