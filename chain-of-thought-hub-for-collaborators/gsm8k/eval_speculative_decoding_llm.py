@@ -647,8 +647,8 @@ else:
                                                   blockwise=args.blockwise,
                                                   clever=args.clever,
                                                   approxi=args.approxi,
-                                                  multidraft=args.multidraft,
-                                                  parallel= args.parallel
+                                                #   multidraft=args.multidraft, # @Qw: disable multidraft for now
+                                                #   parallel= args.parallel
                                                   )
 
                 total_counts["draft_eval"].append(counts["draft_eval"])
