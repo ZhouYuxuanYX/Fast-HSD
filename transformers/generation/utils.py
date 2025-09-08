@@ -5674,8 +5674,8 @@ def _speculative_sampling(
         if backward:
             q = q.cumprod(1)
         q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1) * lenience
-        print("lenience")
-        print(lenience)
+        # print("lenience")
+        # print(lenience)
         p = new_logits.softmax(dim=-1)
         if backward:
             p = p.cumprod(1)

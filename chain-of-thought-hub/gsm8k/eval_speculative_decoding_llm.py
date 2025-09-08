@@ -2,8 +2,8 @@ import re
 import os
 # !!!!!!!!!!!!must set the environment variable before importing transformers, otherwise it won't work!!!!!!!!
 ######### use the local cache on haicore
-os.environ['HF_HOME'] = '/root/autodl-tmp/cache'
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com/'
+# os.environ['HF_HOME'] = '/root/autodl-tmp/cache'
+# os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com/'
 
 # os.environ["TRANSFORMERS_OFFLINE"] = "1"
 from tqdm import tqdm
@@ -42,7 +42,7 @@ def argparse_setup():
     parser.add_argument("--approxi", action='store_true', default=False)
     parser.add_argument('--model', help='must be target or draft', default="target")
     parser.add_argument('--prompt',  default='original', help='must be complex or original')
-    parser.add_argument('--target-model',  default='Qwen/Qwen2.5-32B-Instruct-GPTQ-Int8', help='must be complex or original')
+    parser.add_argument('--target-model',  default='Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8', help='must be complex or original')
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--name', type=str, default='', help='additional name to distinguish different runs')
     args = parser.parse_args()

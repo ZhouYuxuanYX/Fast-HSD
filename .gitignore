@@ -3,3 +3,5 @@ results
 *.ipynb
 main.ipynb
 run.sh
+chain-of-thought-hub/gsm8k/logs/
+chain-of-thought-hub/gsm8k/*txt
