@@ -276,7 +276,7 @@ class HSD():
 
         self.gsm8k_test = gsm8k['test']
 
-        self.num_samples = len(self.gsm8k_test['question'])//20 if int(self.model_size[:-1])>3 else len(self.gsm8k_test['question'])
+        self.num_samples = len(self.gsm8k_test['question'])//5 if int(self.model_size[:-1])>3 else len(self.gsm8k_test['question'])
 
         print(f"num_samples:{self.num_samples}")
 
