@@ -25,15 +25,15 @@ pip install datasets==2.21.0
 ```
 pip install llmcompressor
 ```
-
 ```
 pip install optimum
 ```
-
 ```
 pip install auto-gptq
 ```
-
+```
+pip install --no-index torch-scatter -f https://pytorch-geometric.com/whl/torch-2.1.0+cu118.html
+```
 Other requirements, please refer to requirement.txt
 
 
