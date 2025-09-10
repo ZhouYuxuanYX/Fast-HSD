@@ -209,7 +209,7 @@ def generate(rank, args):
 
 
     model1 = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen2.5-0.5B-Instruct",
+        "Qwen/Qwen2.5-0.5B-Instruct-GPTQ-Int8",
           device_map=None,
           # trust_remote_code=True,
           )
@@ -238,8 +238,18 @@ def generate(rank, args):
     # Manually resize lm_head if needed
     if hasattr(model1, "lm_head"):
         old_lm_head = model1.lm_head
-        model1.lm_head = nn.Linear(old_lm_head.in_features, vocab_size, bias=False).to(old_lm_head.weight.device)
-        model1.lm_head.weight.data[:old_lm_head.out_features] = old_lm_head.weight.data[:vocab_size]
+        dtype = old_lm_head.weight.dtype  # preserve dtype, likely torch.float16 or torch.int8 (for GPTQ)
+        
+        # Create new lm_head with correct dtype and device
+        new_lm_head = nn.Linear(old_lm_head.in_features, vocab_size, bias=False).to(old_lm_head.weight.device,
+                                                                                    dtype=dtype)
+        
+        # Copy existing weights if within bounds
+        with torch.no_grad():
+            new_lm_head.weight[:min(old_lm_head.out_features, vocab_size)] = \
+                old_lm_head.weight[:min(old_lm_head.out_features, vocab_size)]
+        
+        model1.lm_head = new_lm_head
 
     if hasattr(model2, "lm_head"):
         old_lm_head = model2.lm_head
@@ -375,7 +385,9 @@ def generate(rank, args):
                   "step_back_probs":[], "p_i":[], "q_i":[], "hist_lengths": [], "time":[], "ids":[]}
 
 
-    for start in tqdm(range(0, 10, args.batch_size), disable=rank != 0):
+    # Use 1/10 of the total data
+    num_samples = len(prompt_lst) // 1
+    for start in tqdm(range(0, num_samples, args.batch_size), disable=rank != 0):
         stopping_criteria = StoppingCriteriaList()
         if start % 20 == 0 and rank == 0:
             print(f"rank {rank} has generated {start} prompts")
@@ -440,7 +452,7 @@ def generate(rank, args):
                                           blockwise=args.blockwise,
                                           clever=args.clever,
                                           approxi=args.approxi,
-                                          lenience=self.args.lenience
+                                          lenience=args.lenience
                                           )
 
         total_counts["draft_eval"].append(counts["draft_eval"])
