@@ -126,7 +126,7 @@ bash gen_speculative_naivehsd_cnndailymail.sh
 
 **Fast HSD**
 ```
-bash gen_speculative_fasthsd_human_eval.sh
+bash gen_speculative_fasthsd_cnndailymail.sh
 ```
 
 ```
