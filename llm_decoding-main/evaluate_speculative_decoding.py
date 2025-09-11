@@ -4,6 +4,7 @@ import torch
 import os
 # must set before importing transformers
 os.environ['HF_HOME'] = '/root/autodl-tmp/cache'
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com/'
 import transformers
 import argparse
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -501,8 +502,9 @@ def generate(rank, args):
             sd += "_clever"
             if args.approxi:
                 sd += "_approxi"
+                        
 
-
+    sd += f"_lenience_{args.lenience}"
     sd += f"_gamma_{args.gamma}"
 
     task = args.infile.split("/")[2]
