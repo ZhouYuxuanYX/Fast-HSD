@@ -45,6 +45,7 @@ def argparse_setup():
     parser.add_argument('--target-model',  default='Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8', help='must be complex or original')
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--name', type=str, default='', help='additional name to distinguish different runs')
+    parser.add_argument('--cascade', action='store_true', default=False)
     args = parser.parse_args()
     print(args)
     return args
@@ -305,7 +306,8 @@ class HSD():
                                 blockwise=self.args.blockwise,
                                 clever=self.args.clever,
                                 approxi=self.args.approxi,
-                                lenience=self.args.lenience,                                                  
+                                lenience=self.args.lenience,   
+                                cascade = self.args.cascade                                               
                                 # multidraft=args.multidraft
                                 # parallel= args.parallel
                                 )
@@ -477,20 +479,20 @@ class HSD():
         self.target_model = AutoModelForCausalLM.from_pretrained(self.target_model_name,
             device_map={"": self.device} if int(self.model_size[:-1])<32 else None)
 
-
+        # @yx: use default qwen settings, uncomment when conducting ablation study.
         self.draft_model.generation_config.num_assistant_tokens = self.args.gamma
         # otherwise the draft length will change dynamically
         self.draft_model.generation_config.assistant_confidence_threshold = 0
-        self.draft_model.generation_config.temperature = self.args.temperature
-        self.draft_model.generation_config.top_k = 0
-        self.draft_model.generation_config.top_p = self.args.top_p
+        # self.draft_model.generation_config.temperature = self.args.temperature
+        # self.draft_model.generation_config.top_k = 0
+        # self.draft_model.generation_config.top_p = self.args.top_p
 
         self.target_model.generation_config.num_assistant_tokens = self.args.gamma
         # otherwise the draft length will change dynamically
         self.target_model.generation_config.assistant_confidence_threshold = 0
-        self.target_model.generation_config.temperature = self.args.temperature
-        self.target_model.generation_config.top_k = 0
-        self.target_model.generation_config.top_p = self.args.top_p
+        # self.target_model.generation_config.temperature = self.args.temperature
+        # self.target_model.generation_config.top_k = 0
+        # self.target_model.generation_config.top_p = self.args.top_p
 
         vocab_size = min(self.draft_model.config.vocab_size, self.target_model.config.vocab_size)
         self.draft_model.config.vocab_size = vocab_size
@@ -571,7 +573,10 @@ class HSD():
             sd += f"_t{self.args.temperature}"
         if self.args.top_p <10:
             sd += f"_topp_{self.args.top_p}"
-
+        if self.args.lenience<1:
+            sd += f"_lenience_{self.args.lenience}"
+        if self.args.cascade:
+            sd += "_cascade"
         sd += f'{self.args.name}'
         return sd
 

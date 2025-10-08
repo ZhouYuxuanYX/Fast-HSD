@@ -9,16 +9,16 @@ import time
 # this is faster than multiprocessing, 820s vs 1729.9 (multiprocessing) seconds!!!
 # memoryview is also slower than mm[:]
 
-models = "Qwen_32B_0.5B_"
+models = "Qwen_72B_0.5B_"
 gamma = 10
 
 start =time.time()
-with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/32b/Qwen_32B_0.5B_naive_gamma_10_topp_1.0_total_counts.json", "rb") as f:
+with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/72b/Qwen_72B_0.5B_naive_gamma_10_topp_1.0_total_counts.json", "rb") as f:
     mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     counts_naive = orjson.loads(mm[:])   # mm[:] gives you a bytes object
     mm.close()
 
-with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/32b/Qwen_32B_0.5B_blockwise_gamma_10_topp_1.0_total_counts.json", "rb") as f:
+with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/72b/Qwen_72B_0.5B_blockwise_gamma_10_topp_1.0_total_counts.json", "rb") as f:
     mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     counts_blockwise = orjson.loads(mm[:])   # mm[:] gives you a bytes object
     mm.close()
@@ -33,15 +33,17 @@ with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/32b/Qwen_32
 #     counts_backward_recursive = orjson.loads(mm[:])   # mm[:] gives you a bytes object
 #     mm.close()
 
-with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/32b/Qwen_32B_0.5B_backward_gamma_10_topp_1.0_total_counts.json", "rb") as f:
+with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/72b/Qwen_72B_0.5B_backward_gamma_10_topp_1.0_total_counts.json", "rb") as f:
     mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     counts_backward =orjson.loads(mm[:])   # mm[:] gives you a bytes object
     mm.close()
 #
-with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/exp/32b/Qwen_32B_0.5B_backward_clever_approxi_gamma_10_topp_1.0_total_counts.json", "rb") as f:
+with open(f"/u/qwu4/ssd/code/Fast-HSD/chain-of-thought-hub/gsm8k/Qwen_72B_0.5B_backward_clever_gamma_10_topp_1.0_total_counts.json", "rb") as f:
     mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     counts_backward_clever_approxi = orjson.loads(mm[:])   # mm[:] gives you a bytes object
     mm.close()
+
+
 
 end = time.time()
 
@@ -50,11 +52,18 @@ print(end-start)
 
 counts = [
     counts_naive,
-    # counts_backward, counts_backward_recursive,
-          counts_blockwise,
-          counts_backward,
-          counts_backward_clever_approxi,
-          ]
+    counts_blockwise,
+    counts_backward, 
+    counts_backward_clever_approxi,
+]
+
+# Labels for the methods
+method_labels = [
+    'Naive',
+    'Blockwise', 
+    'Backward',
+    'Backward Clever Approxi'
+]
 
 
 draft_eval = []
@@ -66,25 +75,17 @@ total_step = []
 sample_length = []
 
 times = []
-
 lens = []
-
-lens_gamma = []
-
 
 
 for count in counts:
+    print(f"==========Method: {method_labels[counts.index(count)]}==========")
     draft = 0
     target = 0
     step = 0
     sample = 0
     time_ = 0
     len_ = 0
-    len_gamma = 0
-    token_ = 0
-    time_ = 0
-    calls = []
-
     for n in range(len(count["draft_eval"])):
         # exclude the draft lengths<10 cases for a fair comparison
         # count["draft_eval"][n][count["draft_eval"][n]==10]
@@ -101,63 +102,67 @@ for count in counts:
         target += target_list[draft_list==gamma].sum()
         step += step_list[draft_list==gamma].sum()
         sample += sample_list[draft_list==gamma].sum()
-        len_ += len(sample_list[draft_list==gamma])
-        len_gamma += len(sample_list)
-
-        calls.append(np.array(sample_list[draft_list==gamma]).mean())
-
-        token_ += sample_list.sum()
         time_ += float(count["time"][n])
+        len_ += len(sample_list)
 
-    # lens.append(len_)
-    draft_eval.append((draft/len_))
-    target_eval.append((target/len_))
-    total_step.append((step/len_))
-    sample_length.append((sample/len_))
-    # times.append(-time_/len_)
-    times.append(time_)
-    lens.append(token_)
-    # print("std")
-    # print(calls)
-    # print(np.array(calls).std())
+    lens.append(len_) #total steps
+    draft_eval.append(draft/len_)
+    target_eval.append(target/len_)
+    total_step.append(step/len_)
+    sample_length.append(sample/len_) # block efficiency
+    times.append(time_/len_)
 
-# print("total decoding steps")
-# print(lens)
-# print("total tokens")
-# print(lens)
-print("efficiency")
-print(np.array(lens)/np.array(times))
 
+    # times.append(sample/time_)
+
+
+
+
+print("Total decoding times:", times)
 draft_eval = np.array(draft_eval)
 target_eval = np.array(target_eval)
 total_step = np.array(total_step)
+print("total_step", total_step)
 sample_length = np.array(sample_length)
 times = np.array(times)
+speed = []
+for l in range(len(times)):
+    speed.append(sample_length[l].sum() / times[l].sum())
+
+speed = np.array(speed)
+print("sample_length", sample_length)
+print("speed", speed)
 
 
 
+
+# top_p=0.8, temp=1.0:
+# backward_clever: "AAA_last/Qwen_72B_0.5B_backward_clever_gamma_10_topp_0.8_total_counts.json"
+# blockwise: "new_AAA_last/Qwen_72B_0.5B_blockwise_gamma_10_topp_0.8_total_counts.json"
+# naive: "new_AAA_last/Qwen_72B_0.5B_naive_gamma_10_topp_0.8_total_counts.json"
 
 x = np.arange(len(counts))  # [0, 1, 2, 3]
 
-width = 0.3  # Width of the bars
+width = 0.2  # Width of the bars
 
 # Create plot
 fig, ax = plt.subplots()
-# bar1 = ax.bar(x - width, [a.sum() for a in times], width, label='List 1')
+bar1 = ax.bar(x - width-0.05, [a.sum() for a in speed], width, label='speed')  
 bar2 = ax.bar(x, [a.sum() for a in target_eval], width, label='target_eval')
-bar3 = ax.bar(x + width, [a.sum() for a in sample_length], width, label='sample_length')
+bar3 = ax.bar(x + width+0.05, [a.sum() for a in sample_length], width, label='sample_length')
 
 # Add labels, title, and legend
 ax.set_ylabel('Scores')
-ax.set_title('Comparison of Two Lists')
-ax.set_xticks(x)
+ax.set_title('top_p=1.0, temp=1.0')
+ax.set_xticks([0,1,2,3], ['Naive', 'Blockwise', 'NaiveHSD', 'FastHSD'])
 # ax.set_xticklabels(labels)
-# ax.legend()
+ax.legend()
 
 # Optional: Add bar labels
-# ax.bar_label(bar1, padding=3)
-ax.bar_label(bar2, padding=3)
-ax.bar_label(bar3, padding=3)
+ax.bar_label(bar1, padding=2)
+ax.bar_label(bar2, padding=2)
+ax.bar_label(bar3, padding=2)
 
+# top_p=1.0, temp=1.0:
 plt.tight_layout()
-plt.savefig(f"aaa.png")
+plt.savefig(f"capcomp_72b.png")

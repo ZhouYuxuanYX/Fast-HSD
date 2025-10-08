@@ -1998,6 +1998,7 @@ class GenerationMixin:
             clever=False,
             approxi=False,
             lenience=1.0,
+            cascade = False,
             **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -4534,6 +4535,7 @@ class GenerationMixin:
             clever=False,
             approxi=False,
             lenience=1.0,
+            cascade=False,
             **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         r"""
@@ -4840,7 +4842,8 @@ class GenerationMixin:
                                 backward=backward,
                                 return_probs=False,
                                 hist_lengths=hist_lengths,
-                                lenience=lenience
+                                lenience=lenience,
+                                cascade=cascade
                             )
                         else:
                             last_step = (candidate_length - sample_length == 1)
@@ -4865,7 +4868,8 @@ class GenerationMixin:
                                 return_probs=return_probs,
                                 clever=clever,
                                 approxi=approxi,
-                                lenience=lenience
+                                lenience=lenience,
+                                cascade=cascade
                             )
                         else:
                             # n_matches is not equal to accepted_length if the max_new_tokens is reached according to huggingface implementation
@@ -4879,7 +4883,8 @@ class GenerationMixin:
                                 return_probs=False,
                                 clever=clever,
                                 approxi=approxi,
-                                lenience=lenience
+                                lenience=lenience,
+                                cascade=cascade
                             )
                     # for the case when only 1 token left to reach max_new_tokens, the candidate logits will be None for _speculative_sampling (defined in the "get_candidates()" function in candidate_generator.py),
                     # and we could simply sample this token from the large model
@@ -4917,7 +4922,8 @@ class GenerationMixin:
                                     backward=backward,
                                     blockwise=blockwise,
                                     return_probs=True,
-                                    lenience=lenience
+                                    lenience=lenience,
+                                    cascade=cascade
                                 )
                             else:
                                     valid_tokens, n_matches = _speculative_sampling(
@@ -4928,7 +4934,8 @@ class GenerationMixin:
                                         is_done_candidate,
                                         backward=backward,
                                         blockwise=blockwise,
-                                        lenience=lenience
+                                        lenience=lenience,
+                                        cascade=cascade
                                     )
 
                         else:
@@ -4939,7 +4946,8 @@ class GenerationMixin:
                                 new_logits,
                                 is_done_candidate,
                                 backward=backward,
-                                lenience=lenience
+                                lenience=lenience,
+                                cascade=cascade
                             )
 
                     # Case 2: all other cases (originally from assisted generation) 👉 Compare the tokens selected from the
@@ -5213,7 +5221,8 @@ def _speculative_sampling(
         blockwise=False,
         clever=False,
         approxi=False,
-        lenience=1.0
+        lenience=1.0,
+        cascade = False,
 ):
     """
     For recursive algorithm, each time the p_primes are indeed tokenwise probability for each position, both the start position of draft tokens
@@ -5258,7 +5267,7 @@ def _speculative_sampling(
             # print(candidate_length)
             # print(new_candidate_input_ids.shape)
 
-            q_i = q[:, torch.arange(hist_length, candidate_length), new_candidate_input_ids].squeeze(1) * lenience
+            q_i = q[:, torch.arange(hist_length, candidate_length), new_candidate_input_ids].squeeze(1) 
 
             # # print("check distribution")
             # print(p[:, torch.arange(hist_length, candidate_length)].topk(10, dim=-1)[0])
@@ -5266,8 +5275,8 @@ def _speculative_sampling(
 
             q_previous = torch.roll(q_i, 1, 1)
             q_previous[:, 0] = 1
-            log_q_previous = torch.exp(torch.log(q_previous).cumsum(1).unsqueeze(-1))
-            q_next = log_q_previous *q[:, hist_length:candidate_length]
+            log_q_previous = torch.exp(torch.log(q_previous).cumsum(1).unsqueeze(-1)) * lenience #@yx: lenience should be applied here
+            q_next = log_q_previous *q[:, hist_length:candidate_length] #* lenience
 
 
             if hist_length >0:
@@ -5495,7 +5504,9 @@ def _speculative_sampling(
         
         # print("lenience")
         # print(lenience)
-        probability_ratio = (p_i / (q_i)).cumprod(1).unsqueeze(-1)
+        #probability_ratio = (p_i / (q_i)).cumprod(1).unsqueeze(-1)
+        probability_ratio = p_next[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(1) / torch.exp(torch.log(q_i).cumsum(1))
+
         # When probability_ratio > 1 (i.e. q_i(x) < p_i(x), or "assistant probability of the candidate token is smaller
         # than the model probability for the same token"), keep the token. Otherwise reject with p = 1 - probability_ratio
         # (= keep with p = probability_ratio). Keep all the tokens until the first rejection
@@ -5673,20 +5684,40 @@ def _speculative_sampling(
         q = candidate_logits.softmax(dim=-1)
         if backward:
             q = q.cumprod(1)
-        q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1) * lenience
-        # print("lenience")
-        # print(lenience)
-        p = new_logits.softmax(dim=-1)
-        if backward:
-            p = p.cumprod(1)
-        p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
-        probability_ratio = p_i / q_i
+        
+        if not cascade:
+        # ===========================Original===================================
+            q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1) * lenience
+            # print("lenience")
+            # print(lenience)
+            p = new_logits.softmax(dim=-1)
+            if backward:
+                p = p.cumprod(1)
+            p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+            probability_ratio = p_i / q_i
 
-        # When probability_ratio > 1 (i.e. q_i(x) < p_i(x), or "assistant probability of the candidate token is smaller
-        # than the model probability for the same token"), keep the token. Otherwise reject with p = 1 - probability_ratio
-        # (= keep with p = probability_ratio). Keep all the tokens until the first rejection
-        r_i = torch.rand_like(probability_ratio)
-        is_accepted = r_i <= probability_ratio
+            # When probability_ratio > 1 (i.e. q_i(x) < p_i(x), or "assistant probability of the candidate token is smaller
+            # than the model probability for the same token"), keep the token. Otherwise reject with p = 1 - probability_ratio
+            # (= keep with p = probability_ratio). Keep all the tokens until the first rejection
+            r_i = torch.rand_like(probability_ratio)
+            is_accepted = r_i <= probability_ratio
+
+        else:
+        # ==========================Cascade eq.(15)====================================
+            p = new_logits.softmax(dim=-1)
+            if backward:
+                p = p.cumprod(1)
+
+            p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0,1)
+
+            p_max = p[:, :-1].max(dim=-1).values.squeeze(0)
+
+
+            # @qw: 'lenience' corresponds to the 'alpha' parameter in the paper.
+            threshold = p_max * (1 - lenience)
+
+            is_accepted = p_i >= threshold
+        # ==============================================================
 
         n_matches = ((~is_accepted).cumsum(dim=-1) < 1).sum()  # this is `n` in algorithm 1
 
@@ -5706,7 +5737,11 @@ def _speculative_sampling(
                 p_prime.div_(p_prime.sum())
             else:
                 p_prime = p_n_plus_1
-            t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
+            
+            if not cascade:
+                t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
+            else:
+                t = torch.multinomial(p_n_plus_1, num_samples=1).squeeze(1)[None, :] # for cascade
 
             # The selected tokens include the matches (if any) plus the next sampled tokens
             if n_matches > 0:
