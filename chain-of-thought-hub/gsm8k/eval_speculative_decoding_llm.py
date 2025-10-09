@@ -28,18 +28,18 @@ import cProfile, pstats, io
 def argparse_setup():
 
     parser = argparse.ArgumentParser(prog='myprogram')
-    parser.add_argument('--backward', action='store_true', default=False)
-    parser.add_argument('--clever', action='store_true', default=False)
+    parser.add_argument('--backward', action='store_true', default=False) # hsd framework
+    parser.add_argument('--clever', action='store_true', default=False) # lossless
     parser.add_argument('--multidraft', type=int, default=1)
     parser.add_argument('--temperature', type=float, default=1)
     parser.add_argument('--top_p', type=float, default=1)
     parser.add_argument('--blockwise', action='store_true', default=False)
-    parser.add_argument('--recursive', action='store_true', default=False)
+    parser.add_argument('--naive', action='store_true', default=False) # lossy without cap
     parser.add_argument('--speculative', action='store_true', default=False)
     parser.add_argument('--parallel', action='store_true', default=False)
     parser.add_argument('--gamma',  default=10, type=int, help='number of assited tokens')
     parser.add_argument('--lenience',  default=1, type=float, help='lenience factor')
-    parser.add_argument("--approxi", action='store_true', default=False)
+    parser.add_argument("--fast", action='store_true', default=False) # lossy with cap
     parser.add_argument('--model', help='must be target or draft', default="target")
     parser.add_argument('--prompt',  default='original', help='must be complex or original')
     parser.add_argument('--target-model',  default='Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8', help='must be complex or original')
@@ -301,11 +301,11 @@ class HSD():
                                 backward=self.args.backward,
                                 assistant_tokenizer=self.tokenizer1 if not self.same_tokenizer else None,
                                 tokenizer=self.tokenizer1,
-                                recursive=self.args.recursive,
                                 return_probs=self.args.backward or self.args.blockwise,
                                 blockwise=self.args.blockwise,
                                 clever=self.args.clever,
-                                approxi=self.args.approxi,
+                                fast=self.args.fast,
+                                naive=self.args.naive,
                                 lenience=self.args.lenience,   
                                 cascade = self.args.cascade                                               
                                 # multidraft=args.multidraft
@@ -317,7 +317,7 @@ class HSD():
         self.total_counts["target_eval"].append(counts["target_eval"])
         self.total_counts["p_i"].append(counts["p_i"])
         self.total_counts["q_i"].append(counts["q_i"])
-        self.total_counts["hist_lengths"].append(counts["hist_lengths"])
+        # self.total_counts["hist_lengths"].append(counts["hist_lengths"])
         self.total_counts["step_back_probs"].append(counts["step_back_probs"])
         self.total_counts["total_step"].append(counts["total_step"])
         self.total_counts["ids"].append(counts["ids"])
@@ -394,7 +394,7 @@ class HSD():
             self.debug()
         else:
             self.total_counts = {"draft_eval":[], "target_eval":[], "total_step":[], "sample_length":[],
-                "step_back_probs":[], "p_i":[], "q_i":[], "hist_lengths": [], "time":[], "ids":[]}
+                "step_back_probs":[], "p_i":[], "q_i":[], "time":[], "ids":[]}
             
             print("start training")
             self.BW = effective_bandwidth_Bps()
@@ -552,13 +552,13 @@ class HSD():
             if self.args.blockwise:
                 sd += "blockwise"
             else:
-                sd += "backward" if self.args.backward else "naive"
-                if self.args.recursive:
-                    sd += "_recursive"
-                elif self.args.clever:
-                    sd += "_clever"
-                    if self.args.approxi:
-                        sd+="_approxi"
+                sd += "backward" if self.args.backward else "tokenwise"
+            if self.args.naive:
+                sd += "_naive"
+            elif self.args.clever:
+                sd += "_clever"
+            elif self.args.fast:
+                sd+="_fast"
 
         else:
             sd += self.args.model
