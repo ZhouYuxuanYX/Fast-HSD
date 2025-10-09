@@ -2294,6 +2294,7 @@ class GenerationMixin:
                 clever=clever,
                 approxi=approxi,
                 lenience=lenience,
+                cascade=cascade,
                 **model_kwargs,
             )
         elif generation_mode == GenerationMode.DOLA_GENERATION:
