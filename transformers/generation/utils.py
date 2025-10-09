@@ -1995,8 +1995,9 @@ class GenerationMixin:
             recursive=False,
             return_probs=False,
             blockwise=False,
-            clever=False,
-            approxi=False,
+            clever=True,
+            fast=False,
+            naive=False,
             lenience=1.0,
             cascade = False,
             **kwargs,
@@ -2292,7 +2293,8 @@ class GenerationMixin:
                 recursive=recursive,
                 blockwise=blockwise,
                 clever=clever,
-                approxi=approxi,
+                fast=fast,
+                naive=naive,
                 lenience=lenience,
                 cascade=cascade,
                 **model_kwargs,
@@ -4531,10 +4533,10 @@ class GenerationMixin:
             backward=False,
             tokenizer=None,
             return_probs=False,
-            recursive=False,
             blockwise=False,
+            fast=False,
+            naive=False,
             clever=False,
-            approxi=False,
             lenience=1.0,
             cascade=False,
             **model_kwargs,
@@ -4606,259 +4608,153 @@ class GenerationMixin:
         this_peer_finished = False
         is_first_iteration = True  # to preserve the same API in the output as other generation methods
         num_assistant_tokens = candidate_generator.num_assistant_tokens
-        original_len = input_ids.shape[1]
 
         counts = {"draft_eval":[], "target_eval":[], "total_step":[], "sample_length":[],
-                  "step_back_probs":[], "p_i":[], "q_i":[], "hist_lengths": [], "ids": []}
+                  "step_back_probs":[], "p_i":[], "q_i":[], "ids": []}
+        original_len = input_ids.shape[1]
 
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
-            inner_loop = True
-            # an additional while loop for my backward algorithm
-            first_step = True
-            # keep track of the following value
-            # # print("num assistant tokens")
-            # print(num_assistant_tokens)
-
-            num_residual_tokens = num_assistant_tokens
             cur_len = input_ids.shape[-1]
-
             draft_eval = 0
             target_eval = 0
             total_step = 0
             sample_length = 0
-            # for recursively applying backward speculative decoding in the forward process
-            depth = 0
-            hist_lengths = [0]
-            while inner_loop:
 
-                # print("first step")
-                # print(first_step)
-                # print("clever")
-                # print(clever)
-                # print("blockwise")
-                # print(blockwise)
-                #  1. Fetch candidate sequences from a `CandidateGenerator` and move to the correct device
-                if not first_step:
-                    if not recursive:
-                        candidate_generator.num_assistant_tokens = 1
+            #  1. Fetch candidate sequences from a `CandidateGenerator` and move to the correct device
+            candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids)
+            candidate_input_ids = candidate_input_ids.to(self.device)
+            if candidate_logits is not None:
+                candidate_logits = candidate_logits.to(self.device)
+
+            candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
+            total_step+=1
+            draft_eval+=candidate_length
+            target_eval+=1
+            is_done_candidate = stopping_criteria(candidate_input_ids, None)
+
+            print("sub step num assistant tokens")
+            print(candidate_generator.num_assistant_tokens)
+            print("input string")
+            print(tokenizer.decode(input_ids[0][original_len-5:]))
+
+            print("candidate string")
+            print(tokenizer.decode(candidate_input_ids[0][original_len-5:]))
+
+
+            # 2. Use the original model to obtain the next token logits given the candidate sequence. We obtain
+            # `candidate_length + 1` relevant logits from this process: in the event that all candidates are correct,
+            # we use this forward pass to also pick the subsequent logits in the original model.
+
+            # 2.1. Prepare the model inputs
+            candidate_kwargs = copy.copy(model_kwargs)
+            candidate_kwargs = _prepare_attention_mask(
+                candidate_kwargs, candidate_input_ids.shape[1], self.config.is_encoder_decoder
+            )
+            candidate_kwargs = _prepare_token_type_ids(candidate_kwargs, candidate_input_ids.shape[1])
+            if "cache_position" in candidate_kwargs:
+                # # print(candidate_kwargs["cache_position"])
+                # # print(candidate_kwargs["cache_position"])
+                # # print(cur_len)
+                candidate_kwargs["cache_position"] = torch.cat(
+                    (
+                        candidate_kwargs["cache_position"],
+                        torch.arange(cur_len, cur_len + candidate_length, device=input_ids.device,
+                                     dtype=torch.long),
+                    ),
+                    dim=0,
+                )
+                # # print(candidate_kwargs["cache_position"])
+                # # print(cur_len)
+
+            model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **candidate_kwargs)
+            if "num_logits_to_keep" in model_inputs:
+                # # # print("logits to keep frist")
+                model_inputs["num_logits_to_keep"] = candidate_length + 1
+                # # print(model_inputs["num_logits_to_keep"])
+
+            # 2.2. Run a forward pass on the candidate sequence
+            # prepare variable output controls (note: some models won't accept all output controls)
+            model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
+            model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
+
+            outputs = self(**model_inputs)
+            # 2.3. Process the new logits
+            new_logits = outputs.logits[:,
+                         -candidate_length - 1:].float()  # excludes the input prompt if present
+            new_logits = new_logits.to(input_ids.device)
+            next_token_logits = new_logits.clone()
+
+            if len(logits_processor) > 0:
+                for i in range(candidate_length + 1):
+                    new_logits[:, i, :] = logits_processor(candidate_input_ids[:, : cur_len + i],
+                                                           new_logits[:, i, :])
+
+            # 3. Select the accepted tokens. There are two possible cases:
+            # Case 1: `do_sample=True` and we have logits for the candidates (originally from speculative decoding)
+            # 👉 Apply algorithm 1 from the speculative decoding paper (https://arxiv.org/pdf/2211.17192.pdf).
+
+            if backward:
+                if candidate_logits is not None:
+                    if return_probs:
+                        # n_matches is not equal to accepted_length if the max_new_tokens is reached according to huggingface implementation
+                        valid_tokens, n_matches, step_back_probs, p_next, q_next, ids = _speculative_sampling(
+                            candidate_input_ids,
+                            candidate_logits,
+                            candidate_length,
+                            new_logits,
+                            is_done_candidate,
+                            backward=backward,
+                            return_probs=return_probs,
+                            clever=clever,
+                            fast=fast,
+                            naive=naive,
+                            lenience=lenience,
+                            cascade=cascade
+                        )
                     else:
-                        depth+=1
-                        candidate_generator.num_assistant_tokens = candidate_length - (new_cur_len - cur_len)
-
-                    # # print("sub step num assistant tokens")
-                    # print(candidate_generator.num_assistant_tokens)
-                    # print("input string_1")
-                    # print(tokenizer.decode(input_ids[0][original_len-5:]))
-                    # we want to get the previously accepted candidate logits instead of just the newly added 1
-                    # we could accumulate this score at each inner loop
-                    candidate_input_ids, next_candidate_logit = candidate_generator.get_candidates(input_ids)
-                    # print("candidate string_1")
-                    # print(tokenizer.decode(candidate_input_ids[0][original_len-5:]))
-
-                    forward_candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
-                    # # print("forward candidate length")
-                    # print(forward_candidate_length)
-                    # forward candidate length could be 0 if the starting candidate tokens are dropped
-                    # due to the defect of tokenizer maching code of AssistedCandidateGeneratorDifferentTokenizers!
-                    # i will just implement some workaround, if forward_candidate_length==0, diretly go to next round
-
-                    target_eval += 1
-                    draft_eval+=forward_candidate_length
-
-
-                    candidate_input_ids = candidate_input_ids.to(self.device)
-                    accumulated_candidate_length = candidate_input_ids.shape[1] - cur_len
-
-                    # # # print("before")
-                    # # print(candidate_logits.shape)
-                    # in forward sampling, there's only one additional token being predicted
-
-                    # # # print("debug forward")
-                    # # print(candidate_logits is None)
-
-                    if candidate_logits is not None:
-                        candidate_logits = candidate_logits.to(self.device)
-                        candidate_logits = torch.cat(
-                            (candidate_logits[:, :input_ids.shape[1] - cur_len], next_candidate_logit), dim=1)
-
-                    is_done_candidate = stopping_criteria(candidate_input_ids, None)
-
-                else:
-                    # print("input string_2")
-                    # print(tokenizer.decode(input_ids[0][original_len-5:]))
-                    candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids)
-
-                    # print("candidate string_2")
-                    # print(tokenizer.decode(candidate_input_ids[0][original_len-5:]))
-
-                    # # print("debug first step")
-                    # print(candidate_logits is None)
-
-                    candidate_input_ids = candidate_input_ids.to(self.device)
-                    if candidate_logits is not None:
-                        candidate_logits = candidate_logits.to(self.device)
-
-                    candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
-
-                    # # print("candidate length")
-                    # print(candidate_length)
-                    # # # print("first step candidate length")
-                    # # print(candidate_length)
-                    total_step+=1
-                    draft_eval+=candidate_length
-                    target_eval+=1
-
-                    # print("draft_eval")
-                    # print(draft_eval)
-
-
-                    # exit()
-
-                    # candidate model stops early without meeting stopping criteria, maybe the candidate model has different stopping criteria from
-                    # the main model
-                    is_done_candidate = stopping_criteria(candidate_input_ids, None)
-                    # # print(is_done_candidate)
-
-                # 2. Use the original model to obtain the next token logits given the candidate sequence. We obtain
-                # `candidate_length + 1` relevant logits from this process: in the event that all candidates are correct,
-                # we use this forward pass to also pick the subsequent logits in the original model.
-
-                # 2.1. Prepare the model inputs
-                if not first_step:
-                    candidate_kwargs = copy.copy(model_kwargs)
-                    candidate_kwargs = _prepare_attention_mask(
-                        candidate_kwargs, candidate_input_ids.shape[1], self.config.is_encoder_decoder
-                    )
-                    candidate_kwargs = _prepare_token_type_ids(candidate_kwargs, candidate_input_ids.shape[1])
-                    if "cache_position" in candidate_kwargs:
-                        # # print(candidate_kwargs["cache_position"])
-                        # # print(new_cur_len)
-                        # exit()
-                        candidate_kwargs["cache_position"] = torch.cat(
-                            (
-                                candidate_kwargs["cache_position"],
-                                torch.arange(new_cur_len, new_cur_len + forward_candidate_length, device=input_ids.device,
-                                             dtype=torch.long),
-                            ),
-                            dim=0,
+                        # n_matches is not equal to accepted_length if the max_new_tokens is reached according to huggingface implementation
+                        valid_tokens, n_matches = _speculative_sampling(
+                            candidate_input_ids,
+                            candidate_logits,
+                            candidate_length,
+                            new_logits,
+                            is_done_candidate,
+                            backward=backward,
+                            return_probs=False,
+                            clever=clever,
+                            fast=fast,
+                            naive=naive,
+                            lenience=lenience,
+                            cascade=cascade
                         )
-
-                    model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **candidate_kwargs)
-                    if "num_logits_to_keep" in model_inputs:
-                        # # # print("logits to keep forward")
-                        model_inputs["num_logits_to_keep"] = forward_candidate_length+1
-                        # # print( model_inputs["num_logits_to_keep"])
+                # for the case when only 1 token left to reach max_new_tokens, the candidate logits will be None for _speculative_sampling (defined in the "get_candidates()" function in candidate_generator.py),
+                # and we could simply sample this token from the large model
                 else:
-                    candidate_kwargs = copy.copy(model_kwargs)
-                    candidate_kwargs = _prepare_attention_mask(
-                        candidate_kwargs, candidate_input_ids.shape[1], self.config.is_encoder_decoder
-                    )
-                    candidate_kwargs = _prepare_token_type_ids(candidate_kwargs, candidate_input_ids.shape[1])
-                    if "cache_position" in candidate_kwargs:
-                        # # print(candidate_kwargs["cache_position"])
-                        # # print(candidate_kwargs["cache_position"])
-                        # # print(cur_len)
-                        candidate_kwargs["cache_position"] = torch.cat(
-                            (
-                                candidate_kwargs["cache_position"],
-                                torch.arange(cur_len, cur_len + candidate_length, device=input_ids.device,
-                                             dtype=torch.long),
-                            ),
-                            dim=0,
-                        )
-                        # # print(candidate_kwargs["cache_position"])
-                        # # print(cur_len)
+                    if do_sample:
+                        probs = new_logits.softmax(dim=-1)
+                        selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
+                    else:
+                        selected_tokens = new_logits.argmax(dim=-1)
 
-                    model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **candidate_kwargs)
-                    if "num_logits_to_keep" in model_inputs:
-                        # # # print("logits to keep frist")
-                        model_inputs["num_logits_to_keep"] = candidate_length + 1
-                        # # print(model_inputs["num_logits_to_keep"])
+                    candidate_new_tokens = candidate_input_ids[:, cur_len:]
 
-                # 2.2. Run a forward pass on the candidate sequence
-                # prepare variable output controls (note: some models won't accept all output controls)
-                model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
-                model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
+                    step_back_probs, p_next, q_next, ids = None, None, None, None
 
-                outputs = self(**model_inputs)
+                    # error happens for my backward algorithm when candidate logits is None during forward sampling， e.g., max_new_tokens becomes 0
+                    # take the bonus token into consideration for this case!!!!
+                    n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
 
-                # # # print("output shape")
-                # # print(outputs.logits.shape)
+                    # Ensure we don't generate beyond max_len or an EOS token
+                    if is_done_candidate and n_matches == candidate_length:
+                        n_matches -= 1
+                    valid_tokens = selected_tokens[:, : n_matches + 1]
 
-                # 2.3. Process the new logits
-                if not first_step:
-                    # num_logits_to_keep indeeds controls the scores to keep, which is the processed logits
-                    # logits will only store the logits for the predictions, not including the prefix
+            else:
+                if do_sample and candidate_logits is not None:
 
-                    # we need the logits of the original and draft model at the same step for forward sampling
-                    new_logits_ = outputs.logits[:, -forward_candidate_length-1:].float()  # excludes the input prompt if present
-                    new_logits = torch.cat((new_logits[:, :new_cur_len - cur_len], new_logits_), dim=1)
-                    # # # print("new logits shape")
-                    # # print(new_logits.shape)
-                    new_logits = new_logits.to(input_ids.device)
-                    next_token_logits = new_logits.clone()
-                    if len(logits_processor) > 0:
-                        # new_logits length could be 1 if max_length is going to be reached by 1, instead of 1+1=2
-                        for i in range(len(new_logits_)):
-                            new_logits[:, new_cur_len - cur_len + i, :] = logits_processor(
-                                candidate_input_ids[:, :new_cur_len + i], new_logits[:, new_cur_len - cur_len + i, :])
-                else:
-                    # .float() is needed to retain precision for later logits manipulations
-                    # # # print("shapes")
-                    # # print(outputs.logits.shape)
-                    # # print(candidate_length)
-
-                    new_logits = outputs.logits[:,
-                                 -candidate_length - 1:].float()  # excludes the input prompt if present
-                    new_logits = new_logits.to(input_ids.device)
-                    next_token_logits = new_logits.clone()
-
-                    if len(logits_processor) > 0:
-                        for i in range(candidate_length + 1):
-                            # # print(new_logits.shape)
-                            # # print(outputs.logits.shape)
-                            # # print(candidate_logits.shape)
-                            # # print(candidate_length)
-                            # # print(cur_len)
-                            new_logits[:, i, :] = logits_processor(candidate_input_ids[:, : cur_len + i],
-                                                                   new_logits[:, i, :])
-
-                # 3. Select the accepted tokens. There are two possible cases:
-                # Case 1: `do_sample=True` and we have logits for the candidates (originally from speculative decoding)
-                # 👉 Apply algorithm 1 from the speculative decoding paper (https://arxiv.org/pdf/2211.17192.pdf).
-
-                if backward:
-                    # for backward algorithm, the forward sampling step won't generate an extra token, so it will cause some error if
-                    # candidate_logits is None
-                    if not first_step:
-                        if recursive:
-                            # n_matches is not equal to accepted_length if the max_new_tokens is reached according to huggingface implementation
-                            valid_tokens, n_matches = _speculative_sampling(
-                                candidate_input_ids,
-                                candidate_logits,
-                                accumulated_candidate_length,
-                                new_logits,
-                                is_done_candidate,
-                                backward=backward,
-                                return_probs=False,
-                                hist_lengths=hist_lengths,
-                                lenience=lenience,
-                                cascade=cascade
-                            )
-                        else:
-                            last_step = (candidate_length - sample_length == 1)
-                            valid_tokens, n_matches = _forward_sampling(
-                                candidate_input_ids,
-                                candidate_logits,
-                                # should keep the outer loop candidate length, because we need the joint probability of the full historical draft
-                                accumulated_candidate_length,
-                                new_logits,
-                                last_step
-                            )
-                    elif candidate_logits is not None:
+                    if blockwise:
                         if return_probs:
-                            # n_matches is not equal to accepted_length if the max_new_tokens is reached according to huggingface implementation
                             valid_tokens, n_matches, step_back_probs, p_next, q_next, ids = _speculative_sampling(
                                 candidate_input_ids,
                                 candidate_logits,
@@ -4866,55 +4762,13 @@ class GenerationMixin:
                                 new_logits,
                                 is_done_candidate,
                                 backward=backward,
-                                return_probs=return_probs,
-                                clever=clever,
-                                approxi=approxi,
+                                blockwise=blockwise,
+                                return_probs=True,
                                 lenience=lenience,
                                 cascade=cascade
                             )
                         else:
-                            # n_matches is not equal to accepted_length if the max_new_tokens is reached according to huggingface implementation
-                            valid_tokens, n_matches = _speculative_sampling(
-                                candidate_input_ids,
-                                candidate_logits,
-                                candidate_length,
-                                new_logits,
-                                is_done_candidate,
-                                backward=backward,
-                                return_probs=False,
-                                clever=clever,
-                                approxi=approxi,
-                                lenience=lenience,
-                                cascade=cascade
-                            )
-                    # for the case when only 1 token left to reach max_new_tokens, the candidate logits will be None for _speculative_sampling (defined in the "get_candidates()" function in candidate_generator.py),
-                    # and we could simply sample this token from the large model
-                    else:
-                        if do_sample:
-                            probs = new_logits.softmax(dim=-1)
-                            selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
-                        else:
-                            selected_tokens = new_logits.argmax(dim=-1)
-
-                        candidate_new_tokens = candidate_input_ids[:, cur_len:]
-
-                        step_back_probs, p_next, q_next, ids = None, None, None, None
-
-                        # error happens for my backward algorithm when candidate logits is None during forward sampling， e.g., max_new_tokens becomes 0
-                        # take the bonus token into consideration for this case!!!!
-                        n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
-
-                        # Ensure we don't generate beyond max_len or an EOS token
-                        if is_done_candidate and n_matches == candidate_length:
-                            n_matches -= 1
-                        valid_tokens = selected_tokens[:, : n_matches + 1]
-
-                else:
-                    if do_sample and candidate_logits is not None:
-
-                        if blockwise:
-                            if return_probs:
-                                valid_tokens, n_matches, step_back_probs, p_next, q_next, ids = _speculative_sampling(
+                                valid_tokens, n_matches = _speculative_sampling(
                                     candidate_input_ids,
                                     candidate_logits,
                                     candidate_length,
@@ -4922,140 +4776,93 @@ class GenerationMixin:
                                     is_done_candidate,
                                     backward=backward,
                                     blockwise=blockwise,
-                                    return_probs=True,
                                     lenience=lenience,
                                     cascade=cascade
                                 )
-                            else:
-                                    valid_tokens, n_matches = _speculative_sampling(
-                                        candidate_input_ids,
-                                        candidate_logits,
-                                        candidate_length,
-                                        new_logits,
-                                        is_done_candidate,
-                                        backward=backward,
-                                        blockwise=blockwise,
-                                        lenience=lenience,
-                                        cascade=cascade
-                                    )
 
-                        else:
-                            valid_tokens, n_matches = _speculative_sampling(
-                                candidate_input_ids,
-                                candidate_logits,
-                                candidate_length,
-                                new_logits,
-                                is_done_candidate,
-                                backward=backward,
-                                lenience=lenience,
-                                cascade=cascade
-                            )
-
-                    # Case 2: all other cases (originally from assisted generation) 👉 Compare the tokens selected from the
-                    # original model logits with the candidate tokens. We can keep the candidate tokens until the first
-                    # mismatch, or until the max length is reached.
                     else:
-                        if do_sample:
-                            probs = new_logits.softmax(dim=-1)
-                            selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
-                        else:
-                            selected_tokens = new_logits.argmax(dim=-1)
+                        valid_tokens, n_matches = _speculative_sampling(
+                            candidate_input_ids,
+                            candidate_logits,
+                            candidate_length,
+                            new_logits,
+                            is_done_candidate,
+                            backward=backward,
+                            lenience=lenience,
+                            cascade=cascade
+                        )
 
-                        candidate_new_tokens = candidate_input_ids[:, cur_len:]
-
-                        # error happens for my backward algorithm when candidate logits is None during forward sampling， e.g., max_new_tokens becomes 0
-                        # take the bonus token into consideration for this case!!!!
-                        n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
-
-                        # Ensure we don't generate beyond max_len or an EOS token
-                        if is_done_candidate and n_matches == candidate_length:
-                            n_matches -= 1
-                        valid_tokens = selected_tokens[:, : n_matches + 1]
-                        # # # print("n matches")
-                        # # print(n_matches)
-
-                # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
-                # by the model after the last candidate match is also valid, as it is generated from a correct sequence.
-                # Because of this last token, assisted generation search reduces to a normal greedy search/sample if there
-                # is no match.
-
-                # 4.1. Get the valid continuation, after the matching tokens
-                input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
-                if streamer is not None:
-                    streamer.put(valid_tokens.cpu())
-                new_cur_len = input_ids.shape[-1]
-
-
-
-                # 4.2. Discard past key values relative to unused assistant tokens
-
-                new_cache_size = new_cur_len - 1
-                outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
-
-                # synced_gpus: don't waste resources running the code we don't need; kwargs must be updated before skipping
-                model_kwargs = self._update_model_kwargs_for_generation(
-                    outputs,
-                    model_kwargs,
-                    is_encoder_decoder=self.config.is_encoder_decoder,
-                    num_new_tokens=n_matches + 1,
-                )
-
-                # print("n_matches")
-                # print(n_matches)
-                if torch.is_tensor(n_matches):
-                    n_matches=n_matches.cpu().item()
-
-                sample_length += n_matches + 1
-
-                hist_lengths.append(n_matches + 1)
-
-                is_first_iteration = False
-                if backward and (not clever):
-                    # for backward algorithm, candidate generator may yield draft sequences shorter than the
-                    # predefined assistant tokens, for example, when EOS token is encountered
-                    # if the eos token is accepted, inner loop will be false, otherwise it will keep forward_sampling until number of assistant tokens.
-
-                    if candidate_logits is None:
-                        # in this case, no need to differentiate any alogorithm,
-                        # because it's simply selecting draft model sampled tokens which match target model sampled tokens, namely temperature=0
-                        # note that if the tokenizers of two models are different, there's also no difference, because we can't select based on token probs, even their numbers will differ in this case
-                        inner_loop = False
-                    else:
-                        # candidate model stops early without encountering the stopping criteria, solved by setting candidate_confidence_threshold=0
-                        inner_loop = new_cur_len - cur_len < candidate_length and ~stopping_criteria(input_ids, scores)
-
-
-
-                    # # print("inner loop")
-                    # print(new_cur_len)
-                    # print(cur_len)
-                    # print(candidate_length)
-                    # print(inner_loop)
-
-                    first_step = False
+                # Case 2: all other cases (originally from assisted generation) 👉 Compare the tokens selected from the
+                # original model logits with the candidate tokens. We can keep the candidate tokens until the first
+                # mismatch, or until the max length is reached.
                 else:
-                    inner_loop = False
+                    if do_sample:
+                        probs = new_logits.softmax(dim=-1)
+                        selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
+                    else:
+                        selected_tokens = new_logits.argmax(dim=-1)
 
-                ## No heuristic schedule is used by default anyway
-                # first recover the num_assistant_tokens to the default from the 1 of forward sampling
-                candidate_generator.num_assistant_tokens = num_assistant_tokens
-                # 5. Update the candidate generation strategy if needed
-                candidate_generator.update_candidate_strategy(input_ids, new_logits, n_matches)
-                # update the num_assistant_tokens if needed
-                num_assistant_tokens = candidate_generator.num_assistant_tokens
+                    candidate_new_tokens = candidate_input_ids[:, cur_len:]
 
-                # check if stopping criteria is reached, e.g., max new tokens could become 0 during forward sampling too
-                unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
-                this_peer_finished = unfinished_sequences.max() == 0
-                if this_peer_finished:
-                    break
+                    # error happens for my backward algorithm when candidate logits is None during forward sampling， e.g., max_new_tokens becomes 0
+                    # take the bonus token into consideration for this case!!!!
+                    n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
+
+                    # Ensure we don't generate beyond max_len or an EOS token
+                    if is_done_candidate and n_matches == candidate_length:
+                        n_matches -= 1
+                    valid_tokens = selected_tokens[:, : n_matches + 1]
+
+            # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
+            # by the model after the last candidate match is also valid, as it is generated from a correct sequence.
+            # Because of this last token, assisted generation search reduces to a normal greedy search/sample if there
+            # is no match.
+
+            # 4.1. Get the valid continuation, after the matching tokens
+            input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
+            if streamer is not None:
+                streamer.put(valid_tokens.cpu())
+            new_cur_len = input_ids.shape[-1]
+
+            # 4.2. Discard past key values relative to unused assistant tokens
+
+            new_cache_size = new_cur_len - 1
+            outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
+
+            # synced_gpus: don't waste resources running the code we don't need; kwargs must be updated before skipping
+            model_kwargs = self._update_model_kwargs_for_generation(
+                outputs,
+                model_kwargs,
+                is_encoder_decoder=self.config.is_encoder_decoder,
+                num_new_tokens=n_matches + 1,
+            )
+
+            # print("n_matches")
+            # print(n_matches)
+            if torch.is_tensor(n_matches):
+                n_matches=n_matches.cpu().item()
+
+            sample_length += n_matches + 1
+
+            ## No heuristic schedule is used by default anyway
+            # first recover the num_assistant_tokens to the default from the 1 of forward sampling
+            candidate_generator.num_assistant_tokens = num_assistant_tokens
+            # 5. Update the candidate generation strategy if needed
+            candidate_generator.update_candidate_strategy(input_ids, new_logits, n_matches)
+            # update the num_assistant_tokens if needed
+            num_assistant_tokens = candidate_generator.num_assistant_tokens
+
+            # check if stopping criteria is reached, e.g., max new tokens could become 0 during forward sampling too
+            unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
+            this_peer_finished = unfinished_sequences.max() == 0
+            if this_peer_finished:
+                break
 
 
             counts["sample_length"].append(sample_length)
             counts["total_step"].append(total_step)
             counts["draft_eval"].append(draft_eval)
             counts["target_eval"].append(target_eval)
-            counts["hist_lengths"].append(hist_lengths)
             if return_probs:
                 counts["step_back_probs"].append(step_back_probs)
                 counts["p_i"].append(p_next)
@@ -5106,8 +4913,6 @@ class GenerationMixin:
                             decoder_hidden_states, outputs.hidden_states, cur_len, newly_added_length
                         )
 
-            is_first_iteration = False
-
         if streamer is not None:
             streamer.end()
 
@@ -5143,73 +4948,6 @@ class GenerationMixin:
         else:
             return input_ids, counts
 
-
-def _forward_sampling(
-        candidate_input_ids,
-        candidate_logits,
-        candidate_length,
-        new_logits,
-        last_step=False
-):
-    """
-    Applies forward sampling until predefined length or EOS token, since all the backward steps has been done in parrallel
-
-    NOTE: Unless otherwise stated, the variable names match those in the paper.
-    """
-    # # # print("debug")
-    # # print(candidate_length)
-    # # print(new_logits.shape)
-    # # print(candidate_logits.shape)
-
-    # here the candidate length is the length of the full historical draft
-    new_candidate_input_ids = candidate_input_ids[:, -candidate_length:]
-    # Gets the probabilities from the logits. q_i and p_i denote the assistant and model probabilities of the tokens
-    # selected by the assistant, respectively.
-    q = candidate_logits.softmax(dim=-1).double() if  "mps" not in str(candidate_logits.device) else candidate_logits.softmax(
-        dim=-1)
-    # before squeeze, the shape is (1, 1, candidate_length)
-    # after squeeze: (1, candidate_length)
-
-    q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(1).cumprod(1).unsqueeze(-1)
-    p = new_logits.softmax(dim=-1).double() if "mps" not in str(new_logits.device) else new_logits.softmax(dim=-1)
-    p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(1).cumprod(1).unsqueeze(-1)
-
-    p_previous = torch.roll(p_i, 1, 1)
-    p_previous[:, 0] = 1
-    q_previous = torch.roll(q_i, 1, 1)
-    q_previous[:, 0] = 1
-
-
-    ### candidate_length-1 is the last candidate token position, because python starts the counting with 0
-    p_next = p_previous * p[:, candidate_length - 1]
-
-    q_next = q_previous * q[:, candidate_length - 1]
-    # be careful with the positions where diffs=0
-    diffs = p_next - q_next
-    p_plus, p_minus = torch.clamp(diffs, min=0), torch.clamp(-diffs, min=0)
-    denominator = torch.maximum(p_plus.sum(dim=-1, keepdim=True), p_minus.sum(dim=-1, keepdim=True))
-
-    p_primes = torch.nan_to_num(p_plus / denominator)
-
-    # flatten the batch and draft length dimensions to use multinomial function without for loops
-    p_prime = p_primes[:, -1]
-    p_prime.div_(p_prime.sum())
-
-    t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
-
-    if  last_step and t.item() == new_candidate_input_ids[:, -1].item():
-        # last_step is not enough, because the draft proposal for target evaluation is indeed not adopted and resampled
-        # unless the resampled token is equal to the draft token
-
-        p_n_plus_1 = p[:, -1]
-        b = torch.multinomial(p_n_plus_1, num_samples=1).squeeze(1)[None, :]
-        valid_tokens = torch.cat((t, b), dim=-1)
-        return valid_tokens, 1
-    else:
-        valid_tokens = t
-        # the original logic is that the additional token is always equal to n_matches+1
-        return valid_tokens, 0
-
 def _speculative_sampling(
         candidate_input_ids,
         candidate_logits,
@@ -5218,10 +4956,10 @@ def _speculative_sampling(
         is_done_candidate,
         backward=False,
         return_probs=False,
-        hist_lengths=[0],
         blockwise=False,
+        fast=False,
+        naive=False,
         clever=False,
-        approxi=False,
         lenience=1.0,
         cascade = False,
 ):
@@ -5250,207 +4988,76 @@ def _speculative_sampling(
             candidate_logits.device) else candidate_logits.softmax(dim=-1)
 
         p = new_logits.softmax(dim=-1).double() if "mps" not in str(new_logits.device) else new_logits.softmax(dim=-1)
-        hist_length=0
-        for length in hist_lengths:
-            hist_length+=length
-            ## try to avoid overflow!!!
-            new_candidate_input_ids = candidate_input_ids[:, -(candidate_length-hist_length):]
-            # Gets the probabilities from the logits. q_i and p_i denote the assistant and model probabilities of the tokens
-            # selected by the assistant, respectively.
-            # to be more precise using double precision
-            # mps does not support float64 tensor
-            # # print(candidate_logits.device)
 
-            # before squeeze, the shape is (1, 1, candidate_length)
-            # after squeeze: (1, candidate_length)
-            # # print("debug")
-            # print(hist_length)
-            # print(candidate_length)
-            # print(new_candidate_input_ids.shape)
+        new_candidate_input_ids = candidate_input_ids[:, -candidate_length:]
 
-            q_i = q[:, torch.arange(hist_length, candidate_length), new_candidate_input_ids].squeeze(1) 
+        q_i = q[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
 
-            # # print("check distribution")
-            # print(p[:, torch.arange(hist_length, candidate_length)].topk(10, dim=-1)[0])
-            # print(q[:, torch.arange(hist_length, candidate_length)].topk(10, dim=-1)[0])
-
-            q_previous = torch.roll(q_i, 1, 1)
-            q_previous[:, 0] = 1
-            log_q_previous = torch.exp(torch.log(q_previous).cumsum(1).unsqueeze(-1)) * lenience #@yx: lenience should be applied here
-            q_next = log_q_previous *q[:, hist_length:candidate_length] #* lenience
+        q_previous = torch.roll(q_i, 1, 1)
+        q_previous[:, 0] = 1
+        log_q_previous = torch.exp(torch.log(q_previous).cumsum(1).unsqueeze(-1))
+        q_next = log_q_previous *q[:, :candidate_length] * lenience
 
 
-            if hist_length >0:
+        if fast:
+            # lossy
+            # p_i corresponds to marginal probability
+            p_i = p[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
 
-                def zero_after_first_zero(x):
-                    # Create a mask for where x is zero
-                    zero_mask = (x == 0)
+            p_previous = torch.roll(p_i, 1, 1)
+            # in this case, we compensate the subbranch X^i with prefix r^i-1>1 cleverly,
+            # then there's no need to do forward sampling
+            p_previous[:, 0] = 1
 
-                    # Find the index of the first zero in each row
-                    first_zero_idx = zero_mask.float().cumsum(dim=1).clamp(max=1)
+            # i want to control the joint prob ratio of the preceding draft tokens to be <=1,
+            log_p_previous = torch.exp(torch.log(p_previous).cumsum(1)).unsqueeze(-1)
+            # p_next = torch.minimum(log_p_previous, log_q_previous) * p[:, :candidate_length]
+            p_next = torch.minimum(log_p_previous, log_q_previous) * p[:, :candidate_length]
 
-                    # Invert the mask so that all elements after the first zero become 0
-                    keep_mask = (first_zero_idx == 0).float().cumsum(dim=1).clamp(max=1)
+        elif naive:
+            # lossless only with recursive resampling till gamma
+            # p_i corresponds to marginal probability
+            p_i = p[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
 
-                    return x * keep_mask
+            p_previous = torch.roll(p_i, 1, 1)
+            # # print(p_previous.shape)
+            # exit()
+            p_previous[:, 0] = 1
+            p_next = torch.exp(torch.log(p_previous).cumsum(1)).unsqueeze(-1) * p[:, :candidate_length]
 
-                # if not using clone this just returns a view not copy
-                p_new = p_primes[:, length:candidate_length - hist_length + length].clone()
+        elif clever:
+            # p_i corresponds to marginal probability
+            p_i = p[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
 
-                p_new_sum = p_new.sum(-1, keepdim=True)
-                # # print("check p new sum")
-                # print(p_new_sum)
-                # there is already nan in p_new_sum even before deviding by zero
-                # probably due to underflow or division by zero
-                # if divided by 0, the probabilities will become nan, and leading to strange strings
-                p_new_sum[p_new_sum==0] = 1
-                # p_primes evaluated on the draft traject could be zero, if the prefix already becomes with r<1 at some position
-                p_new = p_new.div(p_new_sum)
-                # p_primes are always truncated in the previous non-first step
-                p_i = p_new[:, torch.arange(candidate_length-hist_length), new_candidate_input_ids].squeeze(1)
-                p_i = zero_after_first_zero(p_i)
-                # i can only sample from the tokens which always has prefix with r>1
-                # this sequential sample manner makes it different from parrallel computing r^i>1
-                # because the distribution becomes even sparser:
-                # so p_i also has to be adjusted,
+            p_previous = torch.roll(p_i, 1, 1)
+            # in this case, we compensate the subbranch X^i with prefix r^i-1>1 cleverly,
+            # then there's no need to do forward sampling
+            p_previous[:, 0] = 1
 
-                # p_i has to be re-selected after normalizing p_primes
-                # p_primes has to be re-normalized after applying zero masks, before applied with p_previous
+            # i want to control the joint prob ratio of the preceding draft tokens to be <=1,
+            log_p_previous = torch.exp(torch.log(p_previous).cumsum(1)).unsqueeze(-1)
+            ### lossless
+            ratio = log_p_previous / log_q_previous
 
-                p_previous = torch.roll(p_i, 1, 1)
-                # # print(p_previous.shape)
-                # exit()
-                p_previous[:, 0] = 1
+            previous_max = 1
+            new_p_previous = torch.ones_like(log_p_previous).to(log_p_previous.device)
+            for k in range(candidate_length):
+                if ratio[:, k] > previous_max:
+                    previous_max = ratio[:, k]
 
+                new_p_previous[:, k] = log_p_previous[:, k] / previous_max
 
-                # there might be underflow
-                # p_next = p_previous.cumprod(1).unsqueeze(-1) * p_primes[:, length:candidate_length-hist_length+length]
-
-
-
-
-
-                # check probs
-                # tensor([[1.0000, 0.2642, 0.2578, 0.1293]], device='mps:0')
-
-                # p_primes doesn't sum to one, because they are just sub-branches of the full joint distribution tree
-                # i have to normalize them to sum=1 when treating as marginal probabilities, just as when i do the resampling during forward sampling
-
-                p_next = p_previous.cumprod(-1).unsqueeze(-1) * p_new
-
-                # # print("check probs")
-                # print(p_i)
-                # print(p_next.sum(-1))
-
-            elif clever:
-                # print("debug approxi")
-                # print(approxi)
-                # do not cap the previous ratio
-                if approxi:
-                    # p_i corresponds to marginal probability
-                    p_i = p[:, torch.arange(hist_length, candidate_length), new_candidate_input_ids].squeeze(1)
-
-                    p_previous = torch.roll(p_i, 1, 1)
-                    # # print(p_previous.shape)
-                    # exit()
-                    p_previous[:, 0] = 1
-                    p_next = torch.exp(torch.log(p_previous).cumsum(1)).unsqueeze(-1) * p[:, :candidate_length]
-
-                else:
-                    # p_i corresponds to marginal probability
-                    p_i = p[:, torch.arange(hist_length, candidate_length), new_candidate_input_ids].squeeze(1)
-
-                    p_previous = torch.roll(p_i, 1, 1)
-                    # in this case, we compensate the subbranch X^i with prefix r^i-1>1 cleverly,
-                    # then there's no need to do forward sampling
-                    p_previous[:, 0] = 1
-
-                    # i want to control the joint prob ratio of the preceding draft tokens to be <=1,
-                    log_p_previous = torch.exp(torch.log(p_previous).cumsum(1)).unsqueeze(-1)
-                    # p_next = torch.minimum(log_p_previous, log_q_previous) * p[:, :candidate_length]
-                    p_next = torch.minimum(log_p_previous, log_q_previous) * p[:, :candidate_length]
+            p_next = new_p_previous * p[:, :candidate_length]
 
 
+        diffs = p_next - q_next
 
+        p_plus, p_minus = torch.clamp(diffs, min=0), torch.clamp(-diffs, min=0)
 
-                    # ratio = log_p_previous / log_q_previous
-                    #
-                    # previous_max = 1
-                    # new_p_previous = torch.ones_like(log_p_previous).to(log_p_previous.device)
-                    # for k in range(candidate_length):
-                    #     if ratio[:, k] > previous_max:
-                    #         previous_max = ratio[:, k]
-                    #
-                    #     new_p_previous[:, k] = log_p_previous[:, k] / previous_max
-                    #
-                    # p_next = new_p_previous * p[:, :candidate_length]
-
-            else:
-                # p_i corresponds to marginal probability
-                p_i = p[:, torch.arange(hist_length, candidate_length), new_candidate_input_ids].squeeze(1)
-
-                p_previous = torch.roll(p_i, 1, 1)
-                # # print(p_previous.shape)
-                # exit()
-                p_previous[:, 0] = 1
-                p_next = torch.exp(torch.log(p_previous).cumsum(1)).unsqueeze(-1)*p[:, :candidate_length]
-
-            # # # print("q_next")
-            # # print(q_next)
-            # be careful with the positions where diffs=0
-
-
-            # calculate in log scale (because multiplication becomes addition in log space) to avoid underflow
-
-            # diffs = p_next - q_next
-            diffs = p_next - q_next
-
-            # ratio range is expected to be smaller than absolute probability range, since all probabilities are smaller than 1
-            # ratio_next = (p_previous/q_previous).cumprod(1).unsqueeze(-1)*(p[:, :candidate_length]/q[:, :candidate_length])
-
-            # diffs = (1-ratio_next)*q_next
-
-            # log_p_plus = torch.log(1-ratio_next) + log_q_next
-
-            p_plus, p_minus = torch.clamp(diffs, min=0), torch.clamp(-diffs, min=0)
-
-            # to avoid underflow, try to formulate using r_previous
-            # for extremely small probabilities of any draft in p_i or q_i, it could be 0 simply due to default truncation sampling
-            # so i have to avoid the case of devided by 0! but shall i turn off truncation sampling for the models or not? maybe i just keep
-            # their default parameters
-
-            denominator = torch.maximum(p_plus.sum(dim=-1, keepdim=True), p_minus.sum(dim=-1, keepdim=True))
-            # divide by zero will cause nan value, i can simply replace nan with 0
-            # however, for clever sampling
-            # if there differences are 0, it can also mean that  the joint distribution is exactly the same and could simply accept the current token
-
-
-            # for tokenwise verification, it will never happen when both p_next and q_next=0, because the draft token is sampled from
-            # q, thus never has probability >0
-            # for my backward joint verfication with forward sampling, the previous token probability could be 0 (accumulated candidates contain resampled token in the forward sampling process) and then the joint probability q_i will always be
-            # zero after this token, and a new token sampled from q could also be zero for p, if truncation sampling are applied for p,
-            # in this case, we have two zero joint probabilities, causing the problem to happen
-            p_primes = torch.nan_to_num(p_plus / denominator)
-
-            # # print("check pi and qi")
-            # print(p_i)
-            # print(q_i)
-
-            # # print("check previous prob")
-            # print(p_plus.sum(-1))
-            # print(p_minus.sum(-1))
-            # print(p_primes.sum(-1))
-
-
-
-        # for recursive backward speculative, i actually have to reset the ratio of already accepted tokens to 1,
-
-        # compute the residual probabilities for stepping back
-        # for clever backward, we could accept the token at an intermediate step if p = q,
-        # sine we assume p_previous always <=1 for clever backward, in this case p_primes.sum()=0, but we should not step back
+        denominator = torch.maximum(p_plus.sum(dim=-1, keepdim=True), p_minus.sum(dim=-1, keepdim=True))
+        p_primes = torch.nan_to_num(p_plus / denominator)
 
         step_back_probs = 1 - p_primes.sum(dim=-1)
-
 
         # randomly sample if stepping back, i.e., neither accepted, nor resampled
         uniform_rand = torch.rand_like(step_back_probs)
@@ -5458,70 +5065,19 @@ def _speculative_sampling(
 
         step_back = uniform_rand < step_back_probs
 
-
-
-        # # # print("step back")
-        # # print(step_back)
-        #
-        # # print("step back prob")
-        # print(step_back_probs)
-        # # # print("step back")
-        # # print(step_back)
-
-        # find the last index of False value in step_back array, i.e., not stepping back
-        # could be done by finding the first index of false value in the reversed step_back array
-
-        # # print("check")
-        # print(step_back.shape)
-        stop_positions = candidate_length-hist_length - 1 - torch.flip(~step_back, [-1]).max(-1, keepdim=True)[1]
-        # # print("stop positions")
-        # print(stop_positions)
-
-
+        if step_back.all():
+            stop_positions = 0
+        else:
+            stop_positions = candidate_length - 1 - torch.flip(~step_back, [-1]).max(-1, keepdim=True)[1]
 
         # create the mask for selecting the elements after different stop positions at each row
         select = torch.zeros_like(step_back).to(step_back.device)
 
 
-        # if clever:
-        #     ratio = p_i / q_i  # (batch, time)
-        #     batch_size, time_steps = ratio.shape
-        #     accept_prob = torch.ones(batch_size, time_steps, device=ratio.device)
-        #     running_prod = torch.ones(batch_size, device=ratio.device)
-        #
-        #     for t in range(time_steps):
-        #         running_prod = running_prod * ratio[:, t]  # normal cumulative prod
-        #         accept_prob[:, t] = torch.minimum(running_prod, torch.ones_like(running_prod))  # cap only for storage
-        #
-        #     # Unsqueeze if needed
-        #     accept_prob = accept_prob.unsqueeze(-1)
-        #
-        #     r_i = torch.rand_like(accept_prob)
-        #     is_accepted = r_i <= accept_prob
-
-
-
-        # apply cumprod on the ratio instead of the raw probabilities to avoid underflow
-        
-        # print("lenience")
-        # print(lenience)
-        #probability_ratio = (p_i / (q_i)).cumprod(1).unsqueeze(-1)
         probability_ratio = p_next[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(1) / torch.exp(torch.log(q_i).cumsum(1))
-
-        # When probability_ratio > 1 (i.e. q_i(x) < p_i(x), or "assistant probability of the candidate token is smaller
-        # than the model probability for the same token"), keep the token. Otherwise reject with p = 1 - probability_ratio
-        # (= keep with p = probability_ratio). Keep all the tokens until the first rejection
-
 
         r_i = torch.rand_like(probability_ratio)
         is_accepted = r_i <= probability_ratio
-
-        # # print("prob ratio")
-        # print(probability_ratio)
-        # # print("accept before")
-        # print(is_accepted)
-        # # # print("step back")
-        # # print(step_back)
 
 
         # only decide to accept or not at the last position based on the joint probability ratio
@@ -5529,19 +5085,12 @@ def _speculative_sampling(
         select[torch.arange(p_primes.shape[0]), stop_positions] = ~is_accepted[:, -1:]
         is_accepted = 1 - torch.cumsum(select, dim=-1)
 
-        # # # print("accept after")
-        # # print(is_accepted)
-
-        # # # print("final accepted")
-        # # print(is_accepted)
         #### assume batch_size=1 for the current implementation
         n_matches = is_accepted.sum().item()
 
 
 
-        if is_done_candidate and n_matches == candidate_length-hist_length:
-            # Output length is assumed to be `n_matches + 1`. Since we won't generate another token with the target model
-            # due to acceptance on EOS we fix `n_matches`
+        if is_done_candidate and n_matches == candidate_length:
             n_matches -= 1
             valid_tokens = new_candidate_input_ids[:, : n_matches + 1]
 
@@ -5549,33 +5098,15 @@ def _speculative_sampling(
         else:
             # Next token selection: if there is a rejection, adjust the distribution from the main model before sampling.
             gamma = candidate_logits.shape[1]
-            # # print("check gamma")
-            # print(gamma)
-            # # print("check p")
-            # print(p.shape)
-            # print(candidate_length)
             p_n_plus_1 = p[:, candidate_length, :]
-            if n_matches < gamma - hist_length:
+            if n_matches < gamma:
                 # then we don't have a bonus token, and start the resample from the step where we don't step back, i.e., n_matches+1
-                # # print("check p_prime")
-                # print(p_primes)
                 # don't use in_place operation! because slicing is not creating a new tensor
                 p_prime = p_primes[:, n_matches]
 
                 p_prime = p_prime.div(p_prime.sum())
-
-
-
-
-
-                # # # print("if")
-                # # print(p_primes.shape)
-                # # print(n_matches)
-                # # print(p_prime.shape)
             else:
                 p_prime = p_n_plus_1
-                # # # print("else")
-                # # print(p_prime.shape)
 
             t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
 
@@ -5616,13 +5147,6 @@ def _speculative_sampling(
             sampling_weights = torch.maximum( torch.zeros_like(p[:, token_index]), p[:, token_index] * accept_probability- q[:, token_index])
             # unnormalized reject probability
             reject = torch.tensor([1- accept_probability])[None, :].to(sampling_weights.device)
-
-
-
-            # print(weights)
-            # print(weights.sum())
-
-            # if could happen that when p exactly equals to q at every position, especially for temperature=0
             # the sampling_weights will sum to zero
             if token_index < candidate_length:
                 weights = torch.cat([sampling_weights, reject], dim=-1)
@@ -5683,8 +5207,6 @@ def _speculative_sampling(
         # Gets the probabilities from the logits. q_i and p_i denote the assistant and model probabilities of the tokens
         # selected by the assistant, respectively.
         q = candidate_logits.softmax(dim=-1)
-        if backward:
-            q = q.cumprod(1)
         
         if not cascade:
         # ===========================Original===================================
@@ -5692,8 +5214,6 @@ def _speculative_sampling(
             # print("lenience")
             # print(lenience)
             p = new_logits.softmax(dim=-1)
-            if backward:
-                p = p.cumprod(1)
             p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
             probability_ratio = p_i / q_i
 
@@ -5706,8 +5226,6 @@ def _speculative_sampling(
         else:
         # ==========================Cascade eq.(15)====================================
             p = new_logits.softmax(dim=-1)
-            if backward:
-                p = p.cumprod(1)
 
             p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0,1)
 
