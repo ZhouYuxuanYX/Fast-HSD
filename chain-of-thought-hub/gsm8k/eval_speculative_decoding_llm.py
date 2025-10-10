@@ -42,7 +42,7 @@ def argparse_setup():
     parser.add_argument("--fast", action='store_true', default=False) # lossy with cap
     parser.add_argument('--model', help='must be target or draft', default="target")
     parser.add_argument('--prompt',  default='original', help='must be complex or original')
-    parser.add_argument('--target-model',  default='Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8', help='must be complex or original')
+    parser.add_argument('--target-model',  default='Qwen/Qwen2.5-0.5B-Instruct', help='must be complex or original')
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--name', type=str, default='', help='additional name to distinguish different runs')
     parser.add_argument('--cascade', action='store_true', default=False)
@@ -262,15 +262,15 @@ class HSD():
     def __init__(self):
         self.args = argparse_setup()
         self.target_model_name = self.args.target_model
-        self.draft_model_name = "Qwen/Qwen2.5-0.5B-Instruct-GPTQ-Int8"
+        self.draft_model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         self.model_size = self.target_model_name.split("/")[1].split("-")[1]
-        self.total_counts =  {"draft_eval":[], "target_eval":[], "total_step":[], "sample_length":[],
-                  "step_back_probs":[], "p_i":[], "q_i":[], "time":[], "ids":[]}
         print(f'model size: {self.model_size}')
         if float(self.model_size[:-1])>3:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+        self.total_counts =  {"draft_eval":[], "target_eval":[], "total_step":[], "sample_length":[],
+                  "step_back_probs":[], "p_i":[], "q_i":[], "time":[], "ids":[]}
 
         print(f'using device: {self.device}')
 
@@ -279,7 +279,7 @@ class HSD():
 
         self.gsm8k_test = gsm8k['test']
 
-        self.num_samples = len(self.gsm8k_test['question'])//5 if int(self.model_size[:-1])>3 else len(self.gsm8k_test['question'])
+        self.num_samples = len(self.gsm8k_test['question'])//5 if float(self.model_size[:-1])>3 else len(self.gsm8k_test['question'])
 
         print(f"num_samples:{self.num_samples}")
 
@@ -464,6 +464,8 @@ class HSD():
                     self.total_counts["time"].append(end-start)
 
                     ans_ = self.tokenizer1.decode(outputs[0], skip_special_tokens=True)
+
+
                     fd.write('Q: %s\nA_model:\n%s\nA:\n%s\n\n' % (q, ans_, a))
                 save_path = f"{self.sd}_total_counts.json"
                 print(f'saving to {save_path}')
@@ -475,11 +477,11 @@ class HSD():
     def model_setup(self):
         print(f"load draft model: {self.draft_model_name}")
         self.draft_model = AutoModelForCausalLM.from_pretrained(self.draft_model_name,
-            device_map={"": self.device} if int(self.model_size[:-1])<32 else None)
+            device_map={"": self.device} if float(self.model_size[:-1])<32 else None)
 
         print(f"load target model: {self.target_model_name}")
         self.target_model = AutoModelForCausalLM.from_pretrained(self.target_model_name,
-            device_map={"": self.device} if int(self.model_size[:-1])<32 else None)
+            device_map={"": self.device} if float(self.model_size[:-1])<32 else None)
 
         # @yx: use default qwen settings, uncomment when conducting ablation study.
         self.draft_model.generation_config.num_assistant_tokens = self.args.gamma
