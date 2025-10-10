@@ -264,6 +264,8 @@ class HSD():
         self.target_model_name = self.args.target_model
         self.draft_model_name = "Qwen/Qwen2.5-0.5B-Instruct-GPTQ-Int8"
         self.model_size = self.target_model_name.split("/")[1].split("-")[1]
+        self.total_counts =  {"draft_eval":[], "target_eval":[], "total_step":[], "sample_length":[],
+                  "step_back_probs":[], "p_i":[], "q_i":[], "time":[], "ids":[]}
         print(f'model size: {self.model_size}')
         if float(self.model_size[:-1])>3:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -294,7 +296,7 @@ class HSD():
         # the huggingface implementation decide whether they are different tokenizers, based on assistant model keys
         # different_tokenizers = all(v is not None for v in (assistant_model, target_tokenizer, assistant_tokenizer))
         # so i just need to assign assistant model's tokenizer to both to avoid hf thinking they are different
-        outputs, counts = self.target_model.generate(input_ids, max_new_tokens=512, do_sample=True,
+        outputs, counts = self.target_model.generate(input_ids, max_new_tokens=1000, do_sample=True,
                                 assistant_model=self.draft_model,
                                 # stopping_criteria=stopping_criteria,
                                 assistant_confidence_threshold=0,
