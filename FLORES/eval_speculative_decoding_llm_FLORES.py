@@ -51,8 +51,8 @@ def argparse_setup():
     parser.add_argument('--lenience',  default=1, type=float, help='lenience factor')
     parser.add_argument("--fast", action='store_true', default=False) # lossy with cap
 
-    parser.add_argument('--temperature', type=float, default=1)
-    parser.add_argument('--top_p', type=float, default=1)
+    parser.add_argument('--temperature', type=float, default=0.7)
+    parser.add_argument('--top_p', type=float, default=0.8)
     
 
     parser.add_argument('--target-model', default='Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8', help='must be complex or original')
@@ -578,11 +578,10 @@ class HSD():
 
 
     def model_setup(self):
-        print(f"load draft model: {self.draft_model_name}")
+
         self.draft_model = AutoModelForCausalLM.from_pretrained(self.draft_model_name,
             device_map={"": self.device} if int(self.model_size[:-1])<32 else None)
 
-        print(f"load target model: {self.target_model_name}")
         self.target_model = AutoModelForCausalLM.from_pretrained(self.target_model_name,
             device_map={"": self.device} if int(self.model_size[:-1])<32 else None)
 
@@ -590,31 +589,49 @@ class HSD():
         self.draft_model.generation_config.num_assistant_tokens = self.args.gamma
         # otherwise the draft length will change dynamically
         self.draft_model.generation_config.assistant_confidence_threshold = 0
+        self.draft_model.generation_config.temperature = self.args.temperature
+        self.draft_model.generation_config.top_k = self.args.top_k
+        self.draft_model.generation_config.top_p = self.args.top_p
 
         self.target_model.generation_config.num_assistant_tokens = self.args.gamma
         # otherwise the draft length will change dynamically
         self.target_model.generation_config.assistant_confidence_threshold = 0
+        self.target_model.generation_config.temperature = self.args.temperature
+        self.target_model.generation_config.top_k = self.args.top_k
+        self.target_model.generation_config.top_p = self.args.top_p
 
         vocab_size = min(self.draft_model.config.vocab_size, self.target_model.config.vocab_size)
         self.draft_model.config.vocab_size = vocab_size
         self.target_model.config.vocab_size = vocab_size
         self.same_tokenizer =  self.target_model.config.get_text_config().vocab_size == self.draft_model.config.get_text_config().vocab_size
 
+
+        # just changing the config.vocab_size is not enough, RuntimeError: The size of tensor a (152064) must match the size of tensor b (151936) at non-singleton dimension 2
+        # change output size too
         # Manually resize lm_head if needed
         if hasattr(self.draft_model, "lm_head"):
             old_lm_head = self.draft_model.lm_head
-            dtype = old_lm_head.weight.dtype
+            dtype = old_lm_head.weight.dtype  # preserve dtype, likely torch.float16 or torch.int8 (for GPTQ)
             self.draft_model.lm_head = nn.Linear(old_lm_head.in_features, vocab_size, bias=False).to(old_lm_head.weight.device, dtype=dtype)
             self.draft_model.lm_head.weight.data[:old_lm_head.out_features] = old_lm_head.weight.data[:vocab_size]
 
         if hasattr(self.target_model, "lm_head"):
             old_lm_head = self.target_model.lm_head
-            dtype = old_lm_head.weight.dtype
+            dtype = old_lm_head.weight.dtype  # preserve dtype, likely torch.float16 or torch.int8 (for GPTQ)
+
+            # Create new lm_head with correct dtype and device
             new_lm_head = nn.Linear(old_lm_head.in_features, vocab_size, bias=False).to(old_lm_head.weight.device, dtype=dtype)
+
+            # Copy existing weights if within bounds
             with torch.no_grad():
                 new_lm_head.weight[:min(old_lm_head.out_features, vocab_size)] = \
                     old_lm_head.weight[:min(old_lm_head.out_features, vocab_size)]
+
             self.target_model.lm_head = new_lm_head
+        # redistribute after changing the layer, otherwise it won't work using "balanced" device map for multi-gpu context
+        # Get a recommended device map first
+        # device_map = infer_auto_device_map(model1, max_memory={i: "40GiB" for i in range(torch.cuda.device_count())})
+
 
         if torch.cuda.is_available() and int(self.model_size[:-1])>14:
             device_map1 = manual_device_map(self.draft_model)
@@ -634,6 +651,52 @@ class HSD():
         # load tokenizers
         self.tokenizer1 = AutoTokenizer.from_pretrained(self.draft_model_name)
         self.tokenizer2 = AutoTokenizer.from_pretrained(self.target_model_name)
+
+
+        print('draft_model.config:')
+        print(self.draft_model.config.to_json_string())                 # human-readable
+        print('---')
+
+        print('draft_model.generation_config:')
+        print(self.draft_model.generation_config.to_json_string())
+        print('---')
+
+        print('draft_model.hf_device_map:')
+        print(self.draft_model.hf_device_map)
+        print('---')
+
+        print('draft_model.parameters().dtype, draft_model.parameters().device:')
+        print(next(self.draft_model.parameters()).dtype, next(self.draft_model.parameters()).device)
+        print('---')
+
+        print('tokenizer1.init_kwargs, tokenizer1.special_tokens_map:')
+        print(self.tokenizer1.init_kwargs)
+        print(self.tokenizer1.special_tokens_map)
+
+        print('---')
+
+        print('target_model.config:')
+        print(self.target_model.config.to_json_string())
+        print('---')
+
+        print('target_model.generation_config:')
+        print(self.target_model.generation_config.to_json_string())
+        print('---')
+
+        print('target_model.hf_device_map:')
+        print(self.target_model.hf_device_map)
+        print('---')
+
+        print('target_model.parameters().dtype, target_model.parameters().device:')
+        print(next(self.target_model.parameters()).dtype, next(self.target_model.parameters()).device)
+        print('---')
+
+        print('tokenizer2.init_kwargs, tokenizer2.special_tokens_map:')
+        print(self.tokenizer2.init_kwargs)
+        print(self.tokenizer2.special_tokens_map)
+
+        print('---')
+
 
     def test_setup(self):
         sd = f"Qwen_{self.model_size}_0.5B_"
