@@ -11,7 +11,7 @@
 
 cd /storage/home/hcoda1/8/twang730/p-rg1002-0/UW/spd_icml/Fast-HSD/chain-of-thought-hub/GPQA
 
-name="cascade_lenience_gpqa"
+name="naive_lenience_gpqa"
 
 mkdir -p results/$name/logs
 mkdir -p results/$name/outputs/efficiency
