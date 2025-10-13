@@ -24,9 +24,18 @@ from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 from huggingface_hub import snapshot_download
 import cProfile, pstats, io
 
+import orjson
+import numpy as np
+import matplotlib.pyplot as plt
+import mmap
+import time
+import pandas as pd
+import os
+import glob
+
+
 
 def argparse_setup():
-
     parser = argparse.ArgumentParser(prog='myprogram')
     parser.add_argument('--backward', action='store_true', default=False) # hsd framework
     parser.add_argument('--clever', action='store_true', default=False) # lossless
@@ -40,9 +49,9 @@ def argparse_setup():
     parser.add_argument('--lenience',  default=1, type=float, help='lenience factor')
     parser.add_argument("--fast", action='store_true', default=False) # lossy with cap
 
-    parser.add_argument('--temperature', type=float, default=1)
-    parser.add_argument('--top_p', type=float, default=1)
-    
+    parser.add_argument('--temperature', type=float, default=0.7)
+    parser.add_argument('--top_p', type=float, default=0.8)
+    parser.add_argument('--top_k', type=int, default=20)
 
     parser.add_argument('--target-model', default='Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8', help='must be complex or original')
     parser.add_argument('--draft-model', default='Qwen/Qwen2.5-0.5B-Instruct-GPTQ-Int8', help='must be complex or original')
@@ -231,55 +240,6 @@ def test_answer(pred_str, ans_str):
     else:
         return False
 
-def parse_pred_ans(filename):
-    with open(filename) as fd:
-        lines = fd.readlines()
-    am, a = None, None
-    num_q, acc = 0, 0
-    current_mode = 'none'
-    questions = []
-    ans_pred = []
-    ans_gold = []
-    debug = False
-    for l in lines:
-
-        if (l.startswith('Q: ')):
-            if (am is not None and a is not None):
-
-                questions.append(q)
-                ans_pred.append(am)
-                ans_gold.append(a)
-
-                if (test_answer(am, a)):
-                    acc += 1
-            current_mode = 'q'
-            q = l
-            num_q += 1
-        elif (l.startswith('A_model:')):
-            current_mode = 'am'
-            am = l
-        elif (l.startswith('A:')):
-            current_mode = 'a'
-            a = l
-        else:
-            if (current_mode == 'q'):
-                q += l
-            elif (current_mode == 'am'):
-                am += l
-            elif (current_mode == 'a'):
-                a += l
-            else:
-                raise ValueError(current_mode)
-
-    questions.append(q)
-    ans_pred.append(am)
-    ans_gold.append(a)
-    if (test_answer(am, a)):
-        acc += 1
-    print('num_q %d correct %d ratio %.4f' % (num_q, acc, float(acc / num_q)))
-    return questions, ans_pred, ans_gold
-
-
 class HSD():
     def __init__(self):
         self.args = argparse_setup()
@@ -323,6 +283,8 @@ class HSD():
         self.model_setup()
         self.sd = self.test_setup()
 
+        self.final_result = {'Block Efficiency': None, 'Decoding Speed': None, 'Accuracy': None}
+
 
     def speculative_decoding(self, input_ids):
 
@@ -353,6 +315,90 @@ class HSD():
         return outputs
                         
 
+    def parse_acc(self, file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        results = []
+        for i, line in enumerate(lines):
+            if "MODEL_ANSWER" in line:
+                model_match = re.search(r"MODEL_ANSWER:\s*([A-D])", line)
+                model_ans = model_match.group(1) if model_match else None
+                
+                # Check for the "A:" line and the next line after that
+                true_ans = None
+                if i + 2 < len(lines) and re.match(r"^\s*A:\s*$", lines[i + 1]):
+                    match = re.match(r"^\s*([A-D])\s*$", lines[i + 2])
+                    if match:
+                        true_ans = match.group(1)
+                    else:
+                        continue
+                
+                results.append((model_ans, true_ans))
+        # Print them nicely
+        count = 0
+        total_count = 0
+        for model, true in results:
+            if model is not None and true is not None and model == true:
+                count += 1
+            if model is not None and true is not None:
+                total_count += 1
+
+        score = count / total_count
+
+        print('---')
+        print(f"score: {score*100 :.2f} ")
+        self.final_result['Accuracy'] = f"{score*100 :.2f}"
+
+
+    def efficiency_analysis(self, file_path):
+        gamma = 10
+
+        with open(file_path, "rb") as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            count = orjson.loads(mm[:])   # mm[:] gives you a bytes object
+            mm.close()
+
+        draft = 0
+        target = 0
+        step = 0
+        sample = 0
+        time_ = 0
+        len_ = 0
+
+        for n in range(len(count["draft_eval"])):
+            draft_list = np.array(count["draft_eval"][n])
+            target_list = np.array(count["target_eval"][n])
+            step_list = np.array(count["total_step"][n])
+            sample_list = np.array(count["sample_length"][n])
+
+            draft += draft_list[draft_list==gamma].sum()
+            target += target_list[draft_list==gamma].sum()
+            step += step_list[draft_list==gamma].sum()
+            sample += sample_list[draft_list==gamma].sum()
+            time_ += float(count["time"][n])
+            len_ += len(sample_list)
+
+        # Calculate per-step averages (same as results_analysis.py)
+        draft_eval = draft/len_
+        target_eval = target/len_
+        total_step = step/len_
+        sample_length = sample/len_  # block efficiency
+        times = time_/len_
+
+        print("Total decoding times:", times)
+
+        # Fix speed calculation to match results_analysis.py
+        # Speed should be: total_sample_length / total_time
+        speed = sample / time_
+
+        print(f"BE:{sample_length:.2f}")
+        print(f"Speed:{speed:.2f}")
+        print('---')
+
+        self.final_result['Block Efficiency'] = f"{sample_length:.2f}"
+        self.final_result['Decoding Speed'] = f"{speed:.2f}"
+
     def __call__(self):
         if self.args.debug:
             self.debug()
@@ -362,7 +408,7 @@ class HSD():
             
             print("start training")
             self.BW = effective_bandwidth_Bps()
-            final_txt_file = f'results/eval/test_Qwen2.5-{self.model_size}_{self.dataset_name}_{self.sd}.txt'
+            acc_file = f'results/{self.args.name}/outputs/accuracy/{self.sd}.txt'
             # num_samples
 
             self.progress = 0
@@ -372,7 +418,7 @@ class HSD():
 
             number = self.num_samples
             
-            with open(final_txt_file, 'w') as fd:
+            with open(acc_file, 'w') as fd:
                 for q, a in tqdm(zip(question_part, answer_part),
                                 total=number):
                     print(f"progress: {self.progress}/{number}")
@@ -415,24 +461,30 @@ class HSD():
                     ans_ = self.tokenizer1.decode(outputs[0], skip_special_tokens=True)
                     fd.write('Q: %s\nA_model:\n%s\nA:\n%s\n\n' % (q, ans_, a))
                     fd.flush()  # Force write to disk immediately
-                    if self.progress % 10 == 0:  # Save every 10 iterations
-                        save_path = f"results/eval_BE/{self.sd}_total_counts_checkpoint.json"
-                        with open(save_path, "w") as f:
+                    if self.progress % 2 == 0:  # Save every 10 iterations
+                        efficiency_file = f"results/{self.args.name}/outputs/efficiency/{self.sd}_total_counts_checkpoint.json"
+                        with open(efficiency_file, "w") as f:
                             json.dump(self.total_counts, f)
-                    # print('Q: %s\nA_model:\n%s\nA:\n%s\n\n' % (q, ans_, a))
-                save_path = f"results/eval_BE/{self.sd}_total_counts.json"
-                print(f'saving to {save_path}')
-                with open(save_path, "w") as f:
+                efficiency_file = f"results/{self.args.name}/outputs/efficiency/{self.sd}_total_counts.json"
+                print(f'saving to {efficiency_file}')
+                with open(efficiency_file, "w") as f:
                     json.dump(self.total_counts, f)
+            
+            self.parse_acc(acc_file)
+            self.efficiency_analysis(efficiency_file)
 
-            _, _, _ = parse_pred_ans(final_txt_file)
+            final_result_file = f"results/{self.args.name}/outputs/final_result/{self.sd}_final_result.json"
+            with open(final_result_file, "w") as f:
+                json.dump(self.final_result, f)
+
+
+
 
     def model_setup(self):
-        print(f"load draft model: {self.draft_model_name}")
+
         self.draft_model = AutoModelForCausalLM.from_pretrained(self.draft_model_name,
             device_map={"": self.device} if int(self.model_size[:-1])<32 else None)
 
-        print(f"load target model: {self.target_model_name}")
         self.target_model = AutoModelForCausalLM.from_pretrained(self.target_model_name,
             device_map={"": self.device} if int(self.model_size[:-1])<32 else None)
 
@@ -440,16 +492,16 @@ class HSD():
         self.draft_model.generation_config.num_assistant_tokens = self.args.gamma
         # otherwise the draft length will change dynamically
         self.draft_model.generation_config.assistant_confidence_threshold = 0
-        # self.draft_model.generation_config.temperature = self.args.temperature
-        # self.draft_model.generation_config.top_k = 0
-        # self.draft_model.generation_config.top_p = self.args.top_p
+        self.draft_model.generation_config.temperature = self.args.temperature
+        self.draft_model.generation_config.top_k = self.args.top_k
+        self.draft_model.generation_config.top_p = self.args.top_p
 
         self.target_model.generation_config.num_assistant_tokens = self.args.gamma
         # otherwise the draft length will change dynamically
         self.target_model.generation_config.assistant_confidence_threshold = 0
-        # self.target_model.generation_config.temperature = self.args.temperature
-        # self.target_model.generation_config.top_k = 0
-        # self.target_model.generation_config.top_p = self.args.top_p
+        self.target_model.generation_config.temperature = self.args.temperature
+        self.target_model.generation_config.top_k = self.args.top_k
+        self.target_model.generation_config.top_p = self.args.top_p
 
         vocab_size = min(self.draft_model.config.vocab_size, self.target_model.config.vocab_size)
         self.draft_model.config.vocab_size = vocab_size
@@ -502,6 +554,52 @@ class HSD():
         # load tokenizers
         self.tokenizer1 = AutoTokenizer.from_pretrained(self.draft_model_name)
         self.tokenizer2 = AutoTokenizer.from_pretrained(self.target_model_name)
+
+
+        print('draft_model.config:')
+        print(self.draft_model.config.to_json_string())                 # human-readable
+        print('---')
+
+        print('draft_model.generation_config:')
+        print(self.draft_model.generation_config.to_json_string())
+        print('---')
+
+        print('draft_model.hf_device_map:')
+        print(self.draft_model.hf_device_map)
+        print('---')
+
+        print('draft_model.parameters().dtype, draft_model.parameters().device:')
+        print(next(self.draft_model.parameters()).dtype, next(self.draft_model.parameters()).device)
+        print('---')
+
+        print('tokenizer1.init_kwargs, tokenizer1.special_tokens_map:')
+        print(self.tokenizer1.init_kwargs)
+        print(self.tokenizer1.special_tokens_map)
+
+        print('---')
+
+        print('target_model.config:')
+        print(self.target_model.config.to_json_string())
+        print('---')
+
+        print('target_model.generation_config:')
+        print(self.target_model.generation_config.to_json_string())
+        print('---')
+
+        print('target_model.hf_device_map:')
+        print(self.target_model.hf_device_map)
+        print('---')
+
+        print('target_model.parameters().dtype, target_model.parameters().device:')
+        print(next(self.target_model.parameters()).dtype, next(self.target_model.parameters()).device)
+        print('---')
+
+        print('tokenizer2.init_kwargs, tokenizer2.special_tokens_map:')
+        print(self.tokenizer2.init_kwargs)
+        print(self.tokenizer2.special_tokens_map)
+
+        print('---')
+
 
     def test_setup(self):
         sd = f"Qwen_{self.model_size}_0.5B_"
@@ -594,6 +692,10 @@ class HSD():
                                             # assistant_tokenizer=tokenizer1,
                                             tokenizer=self.tokenizer2
                                             )
+
+
+
+
 
 
 def main():
