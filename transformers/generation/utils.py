@@ -25,6 +25,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 from torch.nn import functional as F
+import math
 
 # from transformers.generation.candidate_generator import AssistantVocabTranslatorCache
 
@@ -1995,11 +1996,16 @@ class GenerationMixin:
             recursive=False,
             return_probs=False,
             blockwise=False,
-            clever=True,
+            clever=False,
             fast=False,
             naive=False,
+            cascade=False,
+            approxi=False,
             lenience=1.0,
-            cascade = False,
+            min_p_spd=None,
+            eta_spd=None,
+            cos_lambda=None,
+            cos_mu=None,
             **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -2297,6 +2303,10 @@ class GenerationMixin:
                 naive=naive,
                 lenience=lenience,
                 cascade=cascade,
+                min_p_spd=min_p_spd,
+                eta_spd=eta_spd,
+                cos_lambda=cos_lambda,
+                cos_mu=cos_mu,
                 **model_kwargs,
             )
         elif generation_mode == GenerationMode.DOLA_GENERATION:
@@ -4539,6 +4549,10 @@ class GenerationMixin:
             clever=False,
             lenience=1.0,
             cascade=False,
+            min_p_spd=None,
+            eta_spd=None,
+            cos_lambda=None,
+            cos_mu=None,
             **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         r"""
@@ -4609,8 +4623,38 @@ class GenerationMixin:
         is_first_iteration = True  # to preserve the same API in the output as other generation methods
         num_assistant_tokens = candidate_generator.num_assistant_tokens
 
+        def _top20_ids_20x20(logits_3d: torch.Tensor) -> torch.Tensor:
+            # Convert [batch, seq, vocab] logits into a fixed [20, 20] top-id map for batch item 0.
+            topk = min(20, logits_3d.shape[-1])
+            top_ids = torch.topk(logits_3d, k=topk, dim=-1).indices[0].to(dtype=torch.long)
+
+            if topk < 20:
+                col_pad = torch.full(
+                    (top_ids.shape[0], 20 - topk),
+                    fill_value=-1,
+                    dtype=torch.long,
+                    device=top_ids.device,
+                )
+                top_ids = torch.cat([top_ids, col_pad], dim=1)
+            else:
+                top_ids = top_ids[:, :20]
+
+            if top_ids.shape[0] < 20:
+                row_pad = torch.full(
+                    (20 - top_ids.shape[0], 20),
+                    fill_value=-1,
+                    dtype=torch.long,
+                    device=top_ids.device,
+                )
+                top_ids = torch.cat([top_ids, row_pad], dim=0)
+            else:
+                top_ids = top_ids[:20, :]
+
+            return top_ids
+
         counts = {"draft_eval":[], "target_eval":[], "total_step":[], "sample_length":[],
-                  "step_back_probs":[], "p_i":[], "q_i":[], "ids": []}
+                  "step_back_probs":[], "p_i":[], "q_i":[], "ids": [],
+                  "draft_top20_ids": [], "target_top20_ids": [], "n_matched": []}
         original_len = input_ids.shape[1]
 
 
@@ -4633,13 +4677,13 @@ class GenerationMixin:
             target_eval+=1
             is_done_candidate = stopping_criteria(candidate_input_ids, None)
 
-            print("sub step num assistant tokens")
-            print(candidate_generator.num_assistant_tokens)
-            print("input string")
-            print(tokenizer.decode(input_ids[0][original_len-5:]))
+            # print("sub step num assistant tokens")
+            # print(candidate_generator.num_assistant_tokens)
+            # print("input string")
+            # print(tokenizer.decode(input_ids[0][original_len-5:]))
 
-            print("candidate string")
-            print(tokenizer.decode(candidate_input_ids[0][original_len-5:]))
+            # print("candidate string")
+            # print(tokenizer.decode(candidate_input_ids[0][original_len-5:]))
 
 
             # 2. Use the original model to obtain the next token logits given the candidate sequence. We obtain
@@ -4710,7 +4754,11 @@ class GenerationMixin:
                             fast=fast,
                             naive=naive,
                             lenience=lenience,
-                            cascade=cascade
+                            cascade=cascade,
+                            min_p_spd=min_p_spd,
+                            eta_spd=eta_spd,
+                            cos_lambda=cos_lambda,
+                            cos_mu=cos_mu
                         )
                     else:
                         # n_matches is not equal to accepted_length if the max_new_tokens is reached according to huggingface implementation
@@ -4726,7 +4774,11 @@ class GenerationMixin:
                             fast=fast,
                             naive=naive,
                             lenience=lenience,
-                            cascade=cascade
+                            cascade=cascade,
+                            min_p_spd=min_p_spd,
+                            eta_spd=eta_spd,
+                            cos_lambda=cos_lambda,
+                            cos_mu=cos_mu
                         )
                 # for the case when only 1 token left to reach max_new_tokens, the candidate logits will be None for _speculative_sampling (defined in the "get_candidates()" function in candidate_generator.py),
                 # and we could simply sample this token from the large model
@@ -4765,7 +4817,11 @@ class GenerationMixin:
                                 blockwise=blockwise,
                                 return_probs=True,
                                 lenience=lenience,
-                                cascade=cascade
+                                cascade=cascade,
+                                min_p_spd=min_p_spd,
+                                eta_spd=eta_spd,
+                                cos_lambda=cos_lambda,
+                                cos_mu=cos_mu
                             )
                         else:
                                 valid_tokens, n_matches = _speculative_sampling(
@@ -4777,7 +4833,11 @@ class GenerationMixin:
                                     backward=backward,
                                     blockwise=blockwise,
                                     lenience=lenience,
-                                    cascade=cascade
+                                    cascade=cascade,
+                                    min_p_spd=min_p_spd,
+                                    eta_spd=eta_spd,
+                                    cos_lambda=cos_lambda,
+                                    cos_mu=cos_mu
                                 )
 
                     else:
@@ -4789,7 +4849,11 @@ class GenerationMixin:
                             is_done_candidate,
                             backward=backward,
                             lenience=lenience,
-                            cascade=cascade
+                            cascade=cascade,
+                            min_p_spd=min_p_spd,
+                            eta_spd=eta_spd,
+                            cos_lambda=cos_lambda,
+                            cos_mu=cos_mu
                         )
 
                 # Case 2: all other cases (originally from assisted generation) 👉 Compare the tokens selected from the
@@ -4841,6 +4905,11 @@ class GenerationMixin:
             # print(n_matches)
             if torch.is_tensor(n_matches):
                 n_matches=n_matches.cpu().item()
+
+            counts["target_top20_ids"].append(_top20_ids_20x20(new_logits).cpu())
+            counts["n_matched"].append(int(n_matches))
+            if candidate_logits is not None:
+                counts["draft_top20_ids"].append(_top20_ids_20x20(candidate_logits.float()).cpu())
 
             sample_length += n_matches + 1
 
@@ -4923,6 +4992,18 @@ class GenerationMixin:
             candidate_generator.assistant_model.generation_config.num_assistant_tokens = (
                 candidate_generator.num_assistant_tokens
             )
+
+        counts["draft"] = (
+            torch.stack(counts["draft_top20_ids"], dim=0)
+            if len(counts["draft_top20_ids"]) > 0
+            else torch.empty((0, 20, 20), dtype=torch.long)
+        )
+        counts["target"] = (
+            torch.stack(counts["target_top20_ids"], dim=0)
+            if len(counts["target_top20_ids"]) > 0
+            else torch.empty((0, 20, 20), dtype=torch.long)
+        )
+
         if return_dict_in_generate:
             if self.config.is_encoder_decoder:
                 return GenerateEncoderDecoderOutput(
@@ -4961,7 +5042,11 @@ def _speculative_sampling(
         naive=False,
         clever=False,
         lenience=1.0,
-        cascade = False,
+        cascade=False,
+        min_p_spd=None,
+        eta_spd=None,
+        cos_lambda=None,
+        cos_mu=None
 ):
     """
     For recursive algorithm, each time the p_primes are indeed tokenwise probability for each position, both the start position of draft tokens
@@ -4984,8 +5069,14 @@ def _speculative_sampling(
             - calculate p_prime'' for determining step_back prob and resample prob
     """
     if backward:
+        if min_p_spd is not None and eta_spd is not None:
+            raise NotImplementedError("backward SPD with min_p_spd and eta_spd is not implemented yet.")
         q = candidate_logits.softmax(dim=-1).double() if "mps" not in str(
             candidate_logits.device) else candidate_logits.softmax(dim=-1)
+        # vocab_size = candidate_logits.shape[-1]
+        # q = torch.ones_like(candidate_logits) / vocab_size
+        # if "mps" not in str(candidate_logits.device):
+        #     q = q.double()
 
         p = new_logits.softmax(dim=-1).double() if "mps" not in str(new_logits.device) else new_logits.softmax(dim=-1)
 
@@ -4996,14 +5087,20 @@ def _speculative_sampling(
         q_previous = torch.roll(q_i, 1, 1)
         q_previous[:, 0] = 1
         log_q_previous = torch.exp(torch.log(q_previous).cumsum(1).unsqueeze(-1))
-        q_next = log_q_previous *q[:, :candidate_length] * lenience
+
+        p_i = p[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
+        # r_i = p_i / q_i
+        # one_over_L = torch.maximum(torch.ones_like(r_i), torch.minimum(1 / r_i, torch.tensor(1 / lenience).to(r_i.device)))
+        # L = 1 / one_over_L
+
+        q_next = log_q_previous * q[:, :candidate_length] # * L.unsqueeze(-1)
+        
+        # print(f'lenience: {lenience} || p: {p_i} || q: {q_i} new_lenience: {L}')
 
 
         if fast:
             # lossy
             # p_i corresponds to marginal probability
-            p_i = p[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
-
             p_previous = torch.roll(p_i, 1, 1)
             # in this case, we compensate the subbranch X^i with prefix r^i-1>1 cleverly,
             # then there's no need to do forward sampling
@@ -5017,7 +5114,7 @@ def _speculative_sampling(
         elif naive:
             # lossless only with recursive resampling till gamma
             # p_i corresponds to marginal probability
-            p_i = p[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
+            
 
             p_previous = torch.roll(p_i, 1, 1)
             # # print(p_previous.shape)
@@ -5027,8 +5124,6 @@ def _speculative_sampling(
 
         elif clever:
             # p_i corresponds to marginal probability
-            p_i = p[:, torch.arange(0, candidate_length), new_candidate_input_ids].squeeze(1)
-
             p_previous = torch.roll(p_i, 1, 1)
             # in this case, we compensate the subbranch X^i with prefix r^i-1>1 cleverly,
             # then there's no need to do forward sampling
@@ -5050,34 +5145,95 @@ def _speculative_sampling(
             p_next = new_p_previous * p[:, :candidate_length]
 
 
-        diffs = p_next - q_next
+        if False:
+            diffs = p_next - q_next
 
-        p_plus, p_minus = torch.clamp(diffs, min=0), torch.clamp(-diffs, min=0)
+            p_plus, p_minus = torch.clamp(diffs, min=0), torch.clamp(-diffs, min=0)
 
-        denominator = torch.maximum(p_plus.sum(dim=-1, keepdim=True), p_minus.sum(dim=-1, keepdim=True))
-        p_primes = torch.nan_to_num(p_plus / denominator)
+            denominator = torch.maximum(p_plus.sum(dim=-1, keepdim=True), p_minus.sum(dim=-1, keepdim=True))
+            p_primes = torch.nan_to_num(p_plus / denominator)
 
-        step_back_probs = 1 - p_primes.sum(dim=-1)
+            step_back_probs = 1 - p_primes.sum(dim=-1)
 
-        # randomly sample if stepping back, i.e., neither accepted, nor resampled
-        uniform_rand = torch.rand_like(step_back_probs)
+            # one_over_L(stepback).cumprod(-1)[-2] * one_over_L(prob)[-1]
+
+            # Apply lenience at the step-back probabilities (rejected tokens)
+            one_over_L = torch.maximum(torch.ones_like(step_back_probs), torch.minimum(1 / step_back_probs, torch.tensor(1 / lenience).to(q_i.device)))
+            step_back_probs = 1 - p_primes.sum(dim=-1) * one_over_L.cumprod(-1)
+
+            # randomly sample if stepping back, i.e., neither accepted, nor resampled
+            uniform_rand = torch.rand_like(step_back_probs)
 
 
-        step_back = uniform_rand < step_back_probs
+            step_back = uniform_rand < step_back_probs
 
-        if step_back.all():
-            stop_positions = 0
+            if step_back.all():
+                stop_positions = 0
+            else:
+                stop_positions = candidate_length - 1 - torch.flip(~step_back, [-1]).max(-1, keepdim=True)[1]
+
+            # create the mask for selecting the elements after different stop positions at each row
+            select = torch.zeros_like(step_back).to(step_back.device)
+
+
+            probability_ratio = p_next[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(1) / torch.exp(torch.log(q_i).cumsum(1))
+
+
+            # Apply lenience at the final accept tokens
+            one_over_L = torch.maximum(torch.ones_like(probability_ratio), torch.minimum(1 / probability_ratio, torch.tensor(1 / lenience).to(q_i.device)))
+            probability_ratio = probability_ratio * one_over_L.cumprod(-1)
+
+
+            r_i = torch.rand_like(probability_ratio)
+            is_accepted = r_i <= probability_ratio
         else:
-            stop_positions = candidate_length - 1 - torch.flip(~step_back, [-1]).max(-1, keepdim=True)[1]
+            diffs = p_next - q_next
+            p_plus, p_minus = torch.clamp(diffs, min=0), torch.clamp(-diffs, min=0)
 
-        # create the mask for selecting the elements after different stop positions at each row
-        select = torch.zeros_like(step_back).to(step_back.device)
+            denominator = torch.maximum(p_plus.sum(dim=-1, keepdim=True), p_minus.sum(dim=-1, keepdim=True))
+            p_primes = torch.nan_to_num(p_plus / denominator)
+
+            step_back_probs = 1 - p_primes.sum(dim=-1)
+
+            # one_over_L(stepback).cumprod(-1)[-2] * one_over_L(prob)[-1]
+            # p_previous = torch.roll(p_i, 1, 1)
+            probability_ratio = p_next[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(1) / torch.exp(torch.log(q_i).cumsum(1))
+
+            one_over_L_stepback = torch.maximum(torch.ones_like(step_back_probs), torch.minimum(1 / probability_ratio, torch.tensor(1 / lenience).to(q_i.device)))
+            # one_over_L_stepback = torch.maximum(torch.ones_like(step_back_probs), torch.minimum(1 / step_back_probs, torch.tensor(1 / lenience).to(q_i.device)))
+
+            # Apply lenience at the step-back probabilities (rejected tokens)
+            step_back_probs = 1 - p_primes.sum(dim=-1) * one_over_L_stepback.cumprod(-1)
+
+            # randomly sample if stepping back, i.e., neither accepted, nor resampled
+            uniform_rand = torch.rand_like(step_back_probs)
 
 
-        probability_ratio = p_next[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(1) / torch.exp(torch.log(q_i).cumsum(1))
+            step_back = uniform_rand < step_back_probs
 
-        r_i = torch.rand_like(probability_ratio)
-        is_accepted = r_i <= probability_ratio
+            if step_back.all():
+                stop_positions = 0
+            else:
+                stop_positions = candidate_length - 1 - torch.flip(~step_back, [-1]).max(-1, keepdim=True)[1]
+
+            # create the mask for selecting the elements after different stop positions at each row
+            select = torch.zeros_like(step_back).to(step_back.device)
+
+
+
+
+
+            # Apply lenience at the final accept tokens
+            one_over_L_prob = torch.maximum(torch.ones_like(probability_ratio), torch.minimum(1 / probability_ratio, torch.tensor(1 / lenience).to(q_i.device)))
+
+            one_over_L_gamma = torch.roll(one_over_L_stepback, 1, 1).cumprod(-1) * one_over_L_prob
+
+
+            probability_ratio = probability_ratio * one_over_L_gamma
+
+
+            r_i = torch.rand_like(probability_ratio)
+            is_accepted = r_i <= probability_ratio
 
 
         # only decide to accept or not at the last position based on the joint probability ratio
@@ -5123,6 +5279,8 @@ def _speculative_sampling(
             return valid_tokens, n_matches, step_back_probs.cpu().numpy().tolist(), p_plus.sum(-1).cpu().numpy().tolist(), p_minus.sum(-1).cpu().numpy().tolist(), new_candidate_input_ids.cpu().numpy().tolist()
 
     elif blockwise:
+        if min_p_spd is not None and eta_spd is not None:
+            raise NotImplementedError("blockwise SPD with min_p_spd and eta_spd is not implemented yet.")
         q = candidate_logits.softmax(dim=-1)
         q = F.pad(q, pad=(0, 0, 0, 1), mode='constant', value=0)
 
@@ -5196,49 +5354,364 @@ def _speculative_sampling(
             return valid_tokens, n_matches, reject_probs, p_i.cpu().numpy().tolist(), q_i.cpu().numpy().tolist(), new_candidate_input_ids.cpu().numpy().tolist()
 
     else:
-        """
-        Applies sampling as in the speculative decoding paper (https://arxiv.org/pdf/2211.17192.pdf, algorithm 1). Returns
-        the selected tokens, as well as the number of candidate matches.
+        if cos_mu is None:
+            new_candidate_input_ids = candidate_input_ids[:, -candidate_length:]
+            q = candidate_logits.softmax(dim=-1)
 
-        NOTE: Unless otherwise stated, the variable names match those in the paper.
-        """
+        yield_distribution = None
 
-        new_candidate_input_ids = candidate_input_ids[:, -candidate_length:]
-        # Gets the probabilities from the logits. q_i and p_i denote the assistant and model probabilities of the tokens
-        # selected by the assistant, respectively.
-        q = candidate_logits.softmax(dim=-1)
+        if lenience < 1.:
+            if 0:
+                # lenience / allow set
+                # P(yield x) =
+                #   min{q(x),p/\ell},              if x in A_Theta
+                #   q(x),                          otherwise
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                min_p_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= min_p_threshold
+                capped_p_t = p_t / lenience
+                yield_distribution = torch.where(
+                    min_p_allow_mask,
+                    torch.minimum(q, capped_p_t),
+                    q,
+                )
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+                
+            if 0:
+                # lenience / allow set
+                # P(yield x) =
+                #   q(x),              if x in A_Theta
+                #   min{q(x),p/\ell},                          otherwise
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                min_p_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= min_p_threshold
+                capped_p_t = p_t / lenience
+                yield_distribution = torch.where(
+                    min_p_allow_mask,
+                    q,
+                    torch.minimum(q, capped_p_t),
+                )
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+            
+            if 0:
+                # tail truncation and tail overshoot capping with overshoot capping outside tail
+                # P(yield x) =
+                #   q(x),              if x in A_Theta and q(x) <= p(x) / ell
+                #   p(x) / ell,        if x in A_Theta and q(x) >  p(x) / ell
+                #   0,                 if x not in A_Theta and q(x) >  p(x) / ell
+                #   p(x) / ell,        if x not in A_Theta and q(x) <=  p(x) / ell
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                min_p_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= min_p_threshold
+                capped_p_t = p_t / lenience
+                yield_distribution = torch.where(
+                    min_p_allow_mask,
+                    torch.minimum(q, capped_p_t),
+                    torch.where(q <= capped_p_t, capped_p_t, torch.zeros_like(q)),
+                )
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+                
+            if 0:
+                # tail truncation with overshoot capping outside tail
+                # P(yield x) =
+                #   q(x),              if x in A_Theta and q(x) <= p(x) / ell
+                #   p(x) / ell,        if x in A_Theta and q(x) >  p(x) / ell
+                #   0,                 if x not in A_Theta
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                min_p_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= min_p_threshold
+                yield_distribution = torch.minimum(q, p_t / lenience) * min_p_allow_mask.to(q.dtype)
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+                
+                
+                
+            elif 0:
+                # tail truncation with overshoot capping at the tail
+                # P(yield x) =
+                #   q(x),              if x in A_Theta
+                #   p(x) / ell,        if x not in A_Theta and q(x) >  p(x) / ell
+                #   0,                 if x not in A_Theta and q(x) <= p(x) / ell
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                min_p_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= min_p_threshold
+                capped_p_t = p_t / lenience
+                yield_distribution = torch.where(
+                    min_p_allow_mask,
+                    q,
+                    torch.where(q > capped_p_t, capped_p_t, torch.zeros_like(q)),
+                )
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio    
+            elif 0:
+                # tail truncation with overshoot capping overall
+                # P(yield x) =
+                #   q(x),              if x in A_Theta and q(x) <= p(x) / ell
+                #   p(x) / ell,        if q(x) > p(x) / ell
+                #   0,                 if x not in A_Theta and q(x) <= p(x) / ell
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                min_p_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= min_p_threshold
+                capped_p_t = p_t / lenience
+                yield_distribution = torch.where(q > capped_p_t, capped_p_t, q)
+                yield_distribution = torch.where(
+                    min_p_allow_mask | (q > capped_p_t),
+                    yield_distribution,
+                    torch.zeros_like(q),
+                )
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio    
+                
+                
+            elif 0:
+                # Run this one
+                # Only overshoot
+                # P(yield x) =
+                #   q(x),              if q(x) <= p(x) / ell
+                #   p(x) / ell,        if q(x) >= p(x) / ell
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                capped_p_t = p_t / lenience
+                yield_distribution = torch.where(q > capped_p_t, capped_p_t, q)
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+
+            elif 0:
+                # remove tail with relative overshoot
+                # yield(x) =
+                #   q(x), if (p_t(x) >= 0.5 * max(p_t)) or (q(x) < p_t(x) / lenience)
+                #   0,    otherwise
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                min_p_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= min_p_threshold
+                capped_p_t = p_t / lenience
+                yield_distribution = torch.where(
+                    min_p_allow_mask | (q < capped_p_t),
+                    q,
+                    torch.zeros_like(q),
+                )
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+
+            elif 1:
+                # And run this one
+                # lenience
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1) * lenience
+                p = new_logits.softmax(dim=-1)
+                p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = p_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+           
+
+        elif min_p_spd is not None:
+            if 1:
+                p = new_logits.softmax(dim=-1)
+                p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0,1)
+                p_max = p[:, :-1].max(dim=-1).values.squeeze(0)
+                threshold = p_max * min_p_spd
+
+                is_accepted = p_i >= threshold
+            elif 0:
+                # min-p for q in p's tail
+                p = new_logits.softmax(dim=-1)
+                p_t = p[:, :-1, :]
+                p_tail_threshold = p_t.max(dim=-1, keepdim=True).values * 0.5
+                min_p_allow_mask = p_t >= p_tail_threshold
+                q_max = q.max(dim=-1, keepdim=True).values
+                q_tail_mask = q < (q_max * min_p_spd)
+                yield_distribution = torch.where(
+                    min_p_allow_mask | q_tail_mask,
+                    q,
+                    torch.zeros_like(q),
+                )
+
+                q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                yield_q_i = yield_distribution[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+                probability_ratio = yield_q_i / q_i
+                r_i = torch.rand_like(probability_ratio)
+                is_accepted = r_i <= probability_ratio
+
+
+
+
+        elif eta_spd is not None:
+            p = new_logits.softmax(dim=-1)
+            p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+            
+            # Compute entropy for each position
+            entropy = torch.distributions.Categorical(logits=new_logits[:, :-1]).entropy()
+            
+            # Convert eta_spd to tensor and compute threshold per position
+            eta_spd_tensor = torch.tensor(eta_spd, device=p.device)
+            threshold = torch.min(eta_spd_tensor, torch.sqrt(eta_spd_tensor) * torch.exp(-entropy))
+            
+            is_accepted = p_i >= threshold
         
-        if not cascade:
-        # ===========================Original===================================
-            q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1) * lenience
-            # print("lenience")
-            # print(lenience)
+        elif cos_lambda is not None:
+            p = new_logits.softmax(dim=-1)
+            
+            # Compute mixed distribution r over the full vocabulary
+            # q has shape (batch, candidate_length, vocab_size), p[:, :-1] aligns with candidate positions
+            r = cos_lambda * q + (1 - cos_lambda) * p[:, :-1, :]
+            
+            q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+            r_i = r[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+
+            probability_ratio = r_i / q_i
+            u_j = torch.rand_like(probability_ratio)
+            is_accepted = u_j <= probability_ratio
+
+            n_matches = ((~is_accepted).cumsum(dim=-1) < 1).sum()
+
+            # Ensure we don't generate beyond max_len or an EOS token (not in algorithm 1, but needed for correct behavior)
+            if is_done_candidate and n_matches == candidate_length:
+                # Output length is assumed to be `n_matches + 1`. Since we won't generate another token with the target model
+                # due to acceptance on EOS we fix `n_matches`
+                n_matches -= 1
+                valid_tokens = new_candidate_input_ids[:, : n_matches + 1]
+            else:
+                # Next token selection: if there is a rejection, adjust the distribution from the main model before sampling.
+                gamma = candidate_logits.shape[1]
+                if n_matches < gamma:
+                    # Use the mixed distribution r at the rejection position
+                    r_n_plus_1 = r[:, n_matches, :]
+                    q_n_plus_1 = q[:, n_matches, :]
+                    p_prime = torch.clamp((r_n_plus_1 - q_n_plus_1), min=0)
+                    p_prime.div_(p_prime.sum())
+                else:
+                    # Bonus token: use target model's distribution at the last position
+                    p_prime = p[:, candidate_length, :]
+                
+
+                t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
+
+
+                # The selected tokens include the matches (if any) plus the next sampled tokens
+                if n_matches > 0:
+                    valid_tokens = torch.cat((new_candidate_input_ids[:, :n_matches], t), dim=-1)
+                else:
+                    valid_tokens = t
+
+            if not return_probs:
+                return valid_tokens, n_matches
+            else:
+                return valid_tokens, n_matches, None, None, None, None
+
+        elif cos_mu is not None:
+
+            new_candidate_input_ids = candidate_input_ids[:, -candidate_length:]
+            
+            # r(x) = p(x) / q(x)^μ / Σ_v [p(v) / q(v)^μ], where μ ∈ [0,1]
+            # Compute probabilities from logits
+            p = new_logits.softmax(dim=-1)
+            q = candidate_logits.softmax(dim=-1)
+            
+            # Compute unnormalized r: p / q^μ (with small epsilon for numerical stability)
+            eps = 1e-10
+            r_unnorm = p[:, :-1, :] / (q).pow(cos_mu)
+            # Normalize to get proper distribution
+            r = r_unnorm / r_unnorm.sum(dim=-1, keepdim=True)
+            
+            q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+            r_i = r[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
+
+            probability_ratio = r_i / q_i
+            u_j = torch.rand_like(probability_ratio)
+            is_accepted = u_j <= probability_ratio
+
+            n_matches = ((~is_accepted).cumsum(dim=-1) < 1).sum()
+
+            # Ensure we don't generate beyond max_len or an EOS token (not in algorithm 1, but needed for correct behavior)
+            if is_done_candidate and n_matches == candidate_length:
+                # Output length is assumed to be `n_matches + 1`. Since we won't generate another token with the target model
+                # due to acceptance on EOS we fix `n_matches`
+                n_matches -= 1
+                valid_tokens = new_candidate_input_ids[:, : n_matches + 1]
+            else:
+                # Next token selection: if there is a rejection, adjust the distribution from the main model before sampling.
+                gamma = candidate_logits.shape[1]
+                if n_matches < gamma:
+                    # Use the mixed distribution r at the rejection position
+                    r_n_plus_1 = r[:, n_matches, :]
+                    q_n_plus_1 = q[:, n_matches, :]
+                    p_prime = torch.clamp((r_n_plus_1 - q_n_plus_1), min=0)
+                    p_prime_sum = p_prime.sum()
+                    if p_prime_sum > 0:
+                        p_prime = p_prime / p_prime_sum
+                    else:
+                        # Fallback to target distribution if residual is all zeros
+                        p_prime = p[:, n_matches, :]
+                else:
+                    # Bonus token: use target model's distribution at the last position
+                    p_prime = p[:, candidate_length, :]
+                
+
+                t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
+
+
+                # The selected tokens include the matches (if any) plus the next sampled tokens
+                if n_matches > 0:
+                    valid_tokens = torch.cat((new_candidate_input_ids[:, :n_matches], t), dim=-1)
+                else:
+                    valid_tokens = t
+
+            if not return_probs:
+                return valid_tokens, n_matches
+            else:
+                return valid_tokens, n_matches, None, None, None, None    
+
+        else:
+            # lossless baseline
+            q_i = q[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
             p = new_logits.softmax(dim=-1)
             p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0, 1)
             probability_ratio = p_i / q_i
-
-            # When probability_ratio > 1 (i.e. q_i(x) < p_i(x), or "assistant probability of the candidate token is smaller
-            # than the model probability for the same token"), keep the token. Otherwise reject with p = 1 - probability_ratio
-            # (= keep with p = probability_ratio). Keep all the tokens until the first rejection
             r_i = torch.rand_like(probability_ratio)
             is_accepted = r_i <= probability_ratio
 
-        else:
-        # ==========================Cascade eq.(15)====================================
-            p = new_logits.softmax(dim=-1)
-
-            p_i = p[:, torch.arange(candidate_length), new_candidate_input_ids].squeeze(0,1)
-
-            p_max = p[:, :-1].max(dim=-1).values.squeeze(0)
-
-
-            # @qw: 'lenience' corresponds to the 'alpha' parameter in the paper.
-            threshold = p_max * (1 - lenience)
-
-            is_accepted = p_i >= threshold
-        # ==============================================================
-
-        n_matches = ((~is_accepted).cumsum(dim=-1) < 1).sum()  # this is `n` in algorithm 1
+        n_matches = ((~is_accepted).cumsum(dim=-1) < 1).sum()
 
         # Ensure we don't generate beyond max_len or an EOS token (not in algorithm 1, but needed for correct behavior)
         if is_done_candidate and n_matches == candidate_length:
@@ -5251,16 +5724,26 @@ def _speculative_sampling(
             gamma = candidate_logits.shape[1]
             p_n_plus_1 = p[:, n_matches, :]
             if n_matches < gamma:
-                q_n_plus_1 = q[:, n_matches, :]
-                p_prime = torch.clamp((p_n_plus_1 - q_n_plus_1), min=0)
-                p_prime.div_(p_prime.sum())
+                if yield_distribution is not None:
+                    yield_n_plus_1 = yield_distribution[:, n_matches, :]
+                    p_prime = torch.clamp((p_n_plus_1 - yield_n_plus_1), min=0)
+                    p_prime_sum = p_prime.sum()
+                    if p_prime_sum > 0:
+                        p_prime = p_prime / p_prime_sum
+                    else:
+                        p_prime = p_n_plus_1
+                else:
+                    q_n_plus_1 = q[:, n_matches, :]
+                    p_prime = torch.clamp((p_n_plus_1 - q_n_plus_1), min=0)
+                    p_prime.div_(p_prime.sum())
             else:
                 p_prime = p_n_plus_1
-            
-            if not cascade:
-                t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
+
+            if min_p_spd is not None or eta_spd is not None:  # for bonus token
+                t = torch.multinomial(p_n_plus_1, num_samples=1).squeeze(1)[None, :]
             else:
-                t = torch.multinomial(p_n_plus_1, num_samples=1).squeeze(1)[None, :] # for cascade
+                t = torch.multinomial(p_prime, num_samples=1).squeeze(1)[None, :]
+
 
             # The selected tokens include the matches (if any) plus the next sampled tokens
             if n_matches > 0:

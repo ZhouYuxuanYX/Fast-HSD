@@ -1,9 +1,2 @@
 __pycache__
-results
-*.ipynb
-main.ipynb
-run.sh
-chain-of-thought-hub/gsm8k/logs/
-chain-of-thought-hub/gsm8k/*txt
-chain-of-thought-hub/gsm8k/*json
-chain-of-thought-hub/gsm8k/*png
+*.json
