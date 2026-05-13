@@ -225,10 +225,12 @@ def analyze(path: str, refs: dict):
 
     cat_correct: Dict[str, int] = {}
     cat_total:   Dict[str, int] = {}
+    n_records = 0
 
     with open(path) as f:
         for line in f:
             record = json.loads(line)
+            n_records += 1
             turn   = record["choices"][0]
             total_tokens += sum(turn["new_tokens"])
             total_time   += sum(turn["wall_time"])
@@ -254,15 +256,9 @@ def analyze(path: str, refs: dict):
                 correct += 1
                 cat_correct[category] = cat_correct.get(category, 0) + 1
 
-    n = total_tokens  # number of questions = len of records
-    # recalculate n properly
-    n_records = 0
-    with open(path) as f:
-        for _ in f:
-            n_records += 1
-
     result = {
         "questions": n_records,
+        "time_per_q": total_time / n_records if n_records > 0 else 0.0,
         "total_tokens": total_tokens,
         "total_time": total_time,
         "speed": total_tokens / total_time if total_time > 0 else 0.0,
@@ -288,6 +284,7 @@ def print_stats(path: str, s: dict, expected_n: int = None, show_cat: bool = Fal
     print(f"  Total tokens        : {s['total_tokens']}")
     print(f"  Total time (s)      : {s['total_time']:.3f}")
     print(f"  Decoding speed      : {s['speed']:.2f} tokens/s")
+    print(f"  Time / question     : {s.get('time_per_q', 0.0):.3f} s")
     if "avg_accepted_per_step" in s:
         print(f"  Avg accepted/step   : {s['avg_accepted_per_step']:.3f}"
               f"  (block_eff: {s['block_efficiency']:.3f})")

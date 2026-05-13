@@ -174,6 +174,7 @@ def analyze(path: str, test_cases: list):
     question_times = []
     total_accepted = 0
     total_block_slots = 0
+    total_max_slots = 0
     total_steps = 0
     correct = 0
     num_passed_total = 0

@@ -1,14 +1,197 @@
 import argparse
 import json
 import re
+from fractions import Fraction
+from typing import Optional
 
-def extract_answer(text):
-    """Extract final answer: prefer #### marker, fall back to last number."""
-    match = re.search(r"####\s*([\d,\.\-]+)", text)
-    if match:
-        return match.group(1).replace(",", "").strip()
-    numbers = re.findall(r"[\-]?\d+(?:,\d{3})*(?:\.\d+)?", text)
-    return numbers[-1].replace(",", "") if numbers else None
+# ── answer extraction ────────────────────────────────────────────────────────
+
+def _extract_boxed(text):
+    """Extract content of the last \\boxed{} with proper brace matching."""
+    matches = list(re.finditer(r"\\boxed\{", text))
+    if not matches:
+        return None
+    start = matches[-1].end()
+    depth = 1
+    pos = start
+    while pos < len(text) and depth > 0:
+        if text[pos] == "{":
+            depth += 1
+        elif text[pos] == "}":
+            depth -= 1
+        pos += 1
+    return text[start:pos - 1].strip() if depth == 0 else None
+
+
+def extract_ref_answer(text):
+    """Extract the ground-truth answer from a reference solution.
+
+    Prefers \\boxed{}, then #### marker, then last number.
+    """
+    boxed = _extract_boxed(text)
+    if boxed is not None:
+        return boxed
+    m = re.search(r"####\s*([\d,\.\-]+)", text)
+    if m:
+        return m.group(1).replace(",", "").strip()
+    nums = re.findall(r"[\-]?\d+(?:,\d{3})*(?:\.\d+)?", text)
+    return nums[-1].replace(",", "") if nums else None
+
+
+def extract_model_answer(text):
+    """Extract the predicted answer from a model response.
+
+    Tries in order:
+      1. \\boxed{...}
+      2. #### marker  (GSM8K style)
+      3. "The answer is X" / "the final answer is X"
+      4. Last "= X" on a line
+      5. Last $...$ expression at end
+      6. Last **X** bold marker
+    """
+    boxed = _extract_boxed(text)
+    if boxed is not None:
+        return boxed
+
+    m = re.search(r"####\s*([\d,\.\-]+)", text)
+    if m:
+        return m.group(1).replace(",", "").strip()
+
+    m = re.search(r"[Tt]he\s+(?:final\s+)?answer\s+is[:\s]+([^\.\n]+)", text)
+    if m:
+        return m.group(1).strip()
+
+    matches = re.findall(r"=\s*([^\n=]+?)\s*$", text, re.MULTILINE)
+    if matches:
+        return matches[-1].strip()
+
+    m = re.search(r"\$([^$]+)\$\s*\.?\s*$", text)
+    if m:
+        return m.group(1).strip()
+
+    m = re.search(r"\*\*([^*]+)\*\*\s*\.?\s*$", text)
+    if m:
+        return m.group(1).strip()
+
+    return None
+
+# ── answer normalisation & comparison ────────────────────────────────────────
+
+def _normalize(answer):
+    """Strip LaTeX formatting and normalise whitespace."""
+    s = str(answer).strip()
+    # remove common LaTeX text commands
+    s = re.sub(r"\\text\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\textbf\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\mathrm\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\mathbf\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\$", "", s)
+    s = re.sub(r"\\[,;!]", "", s)
+    s = re.sub(r"\\quad|\\qquad", " ", s)
+    # \frac{a}{b} -> (a)/(b)
+    for cmd in (r"\\frac", r"\\dfrac"):
+        while cmd in s:
+            fm = re.search(cmd.replace("\\", "\\\\") + r"\{([^{}]*)\}\{([^{}]*)\}", s)
+            if fm:
+                s = s[:fm.start()] + f"({fm.group(1)})/({fm.group(2)})" + s[fm.end():]
+            else:
+                break
+    s = re.sub(r"\\sqrt\{([^{}]*)\}", r"sqrt(\1)", s)
+    s = re.sub(r"\\([a-zA-Z]+)", r"\1", s)  # remove remaining backslash commands
+    s = re.sub(r"\s*,\s*", ",", s)
+    s = re.sub(r"\(\s+", "(", s)
+    s = re.sub(r"\s+\)", ")", s)
+    s = " ".join(s.split()).rstrip(".")
+    return s
+
+
+def _to_float(s):
+    """Try to parse s as a number or fraction; return float or None."""
+    s = s.strip()
+    m = re.match(r"^\(?(-?\d+)\)?/\(?(\d+)\)?$", s)
+    if m:
+        try:
+            return float(Fraction(int(m.group(1)), int(m.group(2))))
+        except (ValueError, ZeroDivisionError):
+            return None
+    m = re.match(r"^(-?[\d.]+)\s*%$", s)
+    if m:
+        try:
+            return float(m.group(1)) / 100
+        except ValueError:
+            return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _answers_equal(pred, ref):
+    """Return True if pred and ref represent the same mathematical answer."""
+    if pred is None or ref is None:
+        return False
+
+    # Handle "a = b" alternative forms in ground truth
+    if "=" in ref:
+        for alt in ref.split("="):
+            if _answers_equal(pred, alt.strip()):
+                return True
+
+    pred_n = _normalize(pred)
+    ref_n  = _normalize(ref)
+
+    if pred_n.lower() == ref_n.lower():
+        return True
+
+    # Comma-separated list / tuple comparison (order-independent)
+    if "," in pred_n or "," in ref_n:
+        def _elements(s):
+            s = s.strip()
+            if (s.startswith("(") and s.endswith(")")) or \
+               (s.startswith("{") and s.endswith("}")):
+                s = s[1:-1]
+            return [e.strip() for e in s.split(",")]
+        pe = _elements(pred_n)
+        re_ = _elements(ref_n)
+        if len(pe) == len(re_) and len(pe) > 1:
+            pv = [_to_float(e) for e in pe]
+            rv = [_to_float(e) for e in re_]
+            if all(v is not None for v in pv + rv):
+                return sorted(pv) == sorted(rv)  # exact after float conversion
+
+    # Numeric comparison with small tolerance
+    pv = _to_float(pred_n)
+    rv = _to_float(ref_n)
+    if pv is not None and rv is not None:
+        return abs(pv - rv) <= 1e-6 * max(1.0, abs(rv))
+
+    # Symbolic comparison via sympy (optional, skipped if sympy unavailable)
+    try:
+        from sympy import simplify, nsimplify
+        from sympy.parsing.latex import parse_latex
+
+        def _sym(s):
+            try:
+                return parse_latex(s)
+            except Exception:
+                pass
+            try:
+                s2 = s.replace("^", "**").replace("sqrt", "__import__('sympy').sqrt")
+                return eval(s2, {"__builtins__": {}})
+            except Exception:
+                return None
+
+        ps = _sym(pred_n)
+        rs = _sym(ref_n)
+        if ps is not None and rs is not None:
+            diff = simplify(ps - rs)
+            if diff == 0:
+                return True
+    except Exception:
+        pass
+
+    return False
+
 
 def load_references(question_file):
     """Return dict of question_id -> reference answer string."""
@@ -17,9 +200,8 @@ def load_references(question_file):
         for line in f:
             record = json.loads(line)
             qid = record["question_id"]
-            # reference is a list; last element has the #### answer
             ref_text = record["reference"][-1] if isinstance(record["reference"], list) else record["reference"]
-            refs[qid] = extract_answer(ref_text)
+            refs[qid] = extract_ref_answer(ref_text)
     return refs
 
 def analyze(path, refs=None):
@@ -52,11 +234,11 @@ def analyze(path, refs=None):
 
             if refs is not None:
                 qid = record["question_id"]
-                pred = extract_answer(turns["turns"][-1])
+                pred = extract_model_answer(turns["turns"][-1])
                 ref = refs.get(qid)
-                if pred is not None and ref is not None:
+                if ref is not None:
                     graded += 1
-                    if pred == ref:
+                    if _answers_equal(pred, ref):
                         correct += 1
 
     n = len(question_times)
