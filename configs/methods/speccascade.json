@@ -1,0 +1,6 @@
+{
+  "method": "speccascade",
+  "description": "SpecCascade truncation-based verification (Narasimhan et al., 2024). Accept iff x is in the min-p allowed set of p.",
+  "param_name": "min_p_spd",
+  "sweep": [0.1, 0.3, 0.5, 0.7, 0.9]
+}

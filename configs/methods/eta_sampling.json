@@ -1,0 +1,6 @@
+{
+  "method": "eta_sampling",
+  "description": "Eta truncation sampling on the draft + lossless SD verification (true eta baseline).",
+  "param_name": "eta_spd",
+  "sweep": [0.05, 0.10, 0.15, 0.20, 0.25]
+}

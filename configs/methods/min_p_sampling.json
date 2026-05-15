@@ -1,0 +1,6 @@
+{
+  "method": "min_p_sampling",
+  "description": "Min-p truncation sampling on the draft + lossless SD verification (true min-p baseline).",
+  "param_name": "min_p",
+  "sweep": [0.1, 0.3, 0.5, 0.7, 0.9]
+}

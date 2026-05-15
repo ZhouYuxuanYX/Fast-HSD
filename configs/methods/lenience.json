@@ -1,0 +1,6 @@
+{
+  "method": "lenience",
+  "description": "Lenience-based collaborative verification (paper §3.1). Accepts a draft token with probability min(1, p(x)/(l*q(x))).",
+  "param_name": "lenience",
+  "sweep": [0.2, 0.4, 0.6, 0.8]
+}
