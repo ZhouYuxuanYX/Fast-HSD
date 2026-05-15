@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fast-hsd"
+version = "0.1.0"
+description = "Unified diagnostic framework for lossy verification in speculative decoding."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Yuxuan Zhou" },
+    { name = "Tianyu Wang" },
+    { name = "Qifeng Wu" },
+    { name = "Fengyi Wu" },
+    { name = "Heng Li" },
+    { name = "Zikai Xiao" },
+    { name = "Wenbin Wang" },
+    { name = "Junyuan Shang" },
+    { name = "Zhi-Qi Cheng" },
+]
+keywords = [
+    "speculative decoding",
+    "lossy verification",
+    "LLM inference",
+    "EAGLE",
+    "speculative sampling",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core runtime dependencies. The HF transformers version is pinned because the
+# vendored patches in fast_hsd/patches/ target that specific release.
+dependencies = [
+    "torch>=2.0",
+    "transformers==4.46.3",
+    "datasets",
+    "accelerate",
+    "numpy",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+# Extra deps required for individual benchmarks.
+math = ["sympy"]
+mbppplus = ["evalplus"]
+include = []   # uses HF datasets only
+bfcl = []      # AST matching is stdlib-only
+
+# Development tooling — kept aligned with .pre-commit-config.yaml.
+dev = [
+    "pytest>=7",
+    "pytest-xdist",
+    "pre-commit",
+    "black",
+    "isort",
+    "ruff",
+    "autoflake",
+]
+
+# Everything.
+all = ["sympy", "evalplus", "pytest", "pre-commit", "black", "isort", "ruff", "autoflake"]
+
+[project.urls]
+Homepage = "https://github.com/ZhouYuxuanYX/Fast-HSD"
+Repository = "https://github.com/ZhouYuxuanYX/Fast-HSD"
+Issues = "https://github.com/ZhouYuxuanYX/Fast-HSD/issues"
+
+[project.scripts]
+# Single CLI entry point — replaces the scattered eval_*.py scripts.
+# Available only after installing the package and only on the `refactor/full`
+# branch; on `refactor/minimal` this entry point is harmless because the
+# verification/src/*/eval_*.py scripts continue to work as before.
+fast-hsd-eval = "fast_hsd.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fast_hsd*"]
+exclude = ["tests*", "EAGLE*", "transformers*", "verification*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["fast_hsd"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # line length handled by black
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: tests that take more than a few seconds",
+    "gpu: tests that require a GPU",
+    "integration: end-to-end integration tests",
+]
