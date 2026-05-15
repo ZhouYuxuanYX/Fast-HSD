@@ -41,19 +41,69 @@ install (with a clear warning) if a different version is active.
 
 ## Quick start
 
+Every method ships with a small shell script in `examples/` that wraps the
+unified `fast-hsd-eval` CLI with a representative hyperparameter value. Pick
+the benchmark (`math`, `mbppplus`, `include`, `bfcl`) as the first positional
+argument and the method hyperparameter as the second.
+
+**Plain speculative decoding (Qwen2.5 72B / 0.5B):**
+
 ```bash
-# Reproduce the main Qwen2.5-72B/0.5B table (Table 1 of the paper):
-bash examples/reproduce_table_main_results.sh
+# Lossless baseline:
+bash examples/sd_baseline.sh math
 
-# Reproduce the EAGLE-3 + Llama-3.1-8B table:
-bash examples/reproduce_eagle3.sh
+# Lossy collaborative verification:
+bash examples/sd_lenience.sh       math   0.4    # lenience factor
+bash examples/sd_cos.sh            math   0.4    # CoS lambda
 
-# Reproduce Figure 1 (gap widens with task difficulty):
-bash examples/reproduce_difficulty_trend.sh
+# Lossy truncation-based verification:
+bash examples/sd_speccascade.sh    math   0.5    # min-p threshold
+bash examples/sd_typical_sampling.sh math 0.10   # eta cutoff (Medusa)
+
+# True truncation baselines (target with truncation sampling + lossless SD):
+bash examples/sd_min_p_sampling.sh math   0.5
+bash examples/sd_eta_sampling.sh   math   0.10
 ```
 
-Each script writes per-run JSONL files under `outputs/<benchmark>/`. Aggregate
-into the paper's table format with:
+**EAGLE-3 (Llama-3.1-8B + EAGLE3 draft, single GPU):**
+
+```bash
+bash examples/eagle3_baseline.sh         math
+bash examples/eagle3_lenience.sh         math 0.4
+bash examples/eagle3_speccascade.sh      math 0.5
+bash examples/eagle3_typical_sampling.sh math 0.10
+```
+
+Each invocation writes one JSONL row per question to
+`outputs/<benchmark>/<name>.jsonl`. The `<name>` field follows
+`<method>_<value>_<bench>_seed<n>` so you can sweep over hyperparameters
+without overwriting files.
+
+**Equivalent direct CLI form**, if you'd rather not go through the shell scripts:
+
+```bash
+fast-hsd-eval \
+    --benchmark math \
+    --method METHOD --param VALUE \
+    --target-model "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8" \
+    --draft-model  "Qwen/Qwen2.5-0.5B-Instruct-GPTQ-Int8" \
+    --temperature 0.7 --seed 0 \
+    --name "RUN_NAME"
+```
+
+### Method argument reference
+
+| Method (`--method`) | Hyperparameter (`--param`) | Sweep range in the paper |
+|---|---|---|
+| `baseline` | — | (omit `--param`) |
+| `lenience` | lenience factor *l* ∈ (0, 1] | {0.2, 0.4, 0.6, 0.8} |
+| `cos` | CoS lambda ∈ [0, 1] | {0.2, 0.4, 0.6, 0.8} |
+| `speccascade` | min-p threshold ∈ [0, 1] | {0.1, 0.3, 0.5, 0.7, 0.9} |
+| `min_p_sampling` | min-p threshold ∈ [0, 1] | {0.1, 0.3, 0.5, 0.7, 0.9} |
+| `eta_sampling` | eta > 0 | {0.05, 0.10, 0.15, 0.20, 0.25} |
+| `typical_sampling` | eta cutoff > 0 | {0.05, 0.10, 0.15, 0.20, 0.25} |
+
+Aggregate per-run JSONLs into a single table with:
 
 ```bash
 python scripts/results_analysis.py outputs/math/*.jsonl
