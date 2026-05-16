@@ -54,3 +54,6 @@ htmlcov/
 .scratch/
 scratch/
 test_write_canary.txt
+
+sbatch/
+outputs/

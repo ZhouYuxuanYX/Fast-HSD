@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -55,12 +56,44 @@ def _check_transformers_version() -> None:
         )
 
 
+_REL_IMPORT_RE = re.compile(r"^(\s*)from\s+(\.+)([\w.]*)\s+import\s+", re.MULTILINE)
+
+
+def _rewrite_relative_imports(source: str, package: str) -> str:
+    """Rewrite ``from .X import Y`` / ``from ..X import Y`` to absolute paths
+    rooted at ``package``.
+
+    The vendored files use relative imports because they originally lived
+    inside the ``transformers`` package tree. When we load them as standalone
+    modules under ``fast_hsd._patched_*`` names, those relative imports have
+    no anchor and raise ``ValueError: attempted relative import beyond top-
+    level package``. Rewriting them to absolute ``transformers.*`` form makes
+    them resolve against the live (and, by load-order, already-patched)
+    transformers package.
+    """
+    parts = package.split(".")
+
+    def repl(m: "re.Match[str]") -> str:
+        indent, dots, target = m.group(1), m.group(2), m.group(3)
+        depth = len(dots)
+        # depth=1 → same package; depth=2 → parent package; etc.
+        if depth - 1 > len(parts):
+            return m.group(0)
+        anchor = parts[: len(parts) - (depth - 1)]
+        absolute = ".".join(anchor + ([target] if target else []))
+        return f"{indent}from {absolute} import "
+
+    return _REL_IMPORT_RE.sub(repl, source)
+
+
 def _load_vendored_module(relative_path: str, qualified_name: str):
     """Import a single vendored file as a module under ``qualified_name``.
 
     We use ``importlib.util.spec_from_file_location`` instead of placing the
     vendored ``transformers/`` directory on ``sys.path``, because doing so
-    would shadow the real ``transformers`` package entirely.
+    would shadow the real ``transformers`` package entirely. Relative imports
+    in the vendored source are rewritten to absolute ``transformers.*`` form
+    on the fly so they resolve correctly.
     """
     import importlib.util
 
@@ -71,13 +104,35 @@ def _load_vendored_module(relative_path: str, qualified_name: str):
             f"Did you check out the repository in full?"
         )
 
-    spec = importlib.util.spec_from_file_location(qualified_name, src)
-    if spec is None or spec.loader is None:
+    # Compute the original transformers package path for this vendored file
+    # (e.g. ``generation/candidate_generator.py`` → ``transformers.generation``).
+    rel_parts = relative_path.split("/")
+    pkg = ".".join(["transformers"] + rel_parts[:-1])
+
+    source = src.read_text()
+    rewritten = _rewrite_relative_imports(source, pkg)
+
+    spec = importlib.util.spec_from_loader(qualified_name, loader=None, origin=str(src))
+    if spec is None:
         raise ImportError(f"Could not create import spec for {src}")
     module = importlib.util.module_from_spec(spec)
+    module.__file__ = str(src)
     sys.modules[qualified_name] = module
-    spec.loader.exec_module(module)
+    exec(compile(rewritten, str(src), "exec"), module.__dict__)
     return module
+
+
+def _rebind(live, patched) -> list:
+    """Copy public symbols from ``patched`` onto ``live``. Returns names rebound."""
+    rebound = []
+    for name, value in vars(patched).items():
+        if name.startswith("__"):
+            continue
+        if hasattr(live, name) and getattr(live, name) is value:
+            continue
+        setattr(live, name, value)
+        rebound.append(f"{live.__name__}.{name}")
+    return rebound
 
 
 _INSTALLED = False
@@ -102,44 +157,27 @@ def install(verbose: bool = False) -> None:
 
     _check_transformers_version()
 
-    # Order matters: ``utils`` depends on ``candidate_generator`` and
-    # ``logits_process``, so patch those first.
-    import transformers.generation.candidate_generator as _cg
-    import transformers.generation.logits_process as _lp
-    import transformers.generation.utils as _gen_utils
+    # Force the live transformers submodules to be imported before we patch
+    # them, so the absolute imports inside our rewritten vendored source
+    # resolve against real modules (and pick up our patches as we go).
     import transformers.cache_utils as _cache_utils
+    import transformers.generation.logits_process as _lp
+    import transformers.generation.candidate_generator as _cg
+    import transformers.generation.utils as _gen_utils
 
-    patched_cg = _load_vendored_module(
-        "generation/candidate_generator.py", "fast_hsd._patched_candidate_generator"
-    )
-    patched_lp = _load_vendored_module(
-        "generation/logits_process.py", "fast_hsd._patched_logits_process"
-    )
-    patched_gen = _load_vendored_module(
-        "generation/utils.py", "fast_hsd._patched_generation_utils"
-    )
-    patched_cache = _load_vendored_module(
-        "cache_utils.py", "fast_hsd._patched_cache_utils"
-    )
-
-    # Rebind public symbols from the patched module onto the live transformers
-    # module. We walk the patched module's ``__dict__`` rather than hard-coding
-    # symbol names so that the patch covers every helper the user might import
-    # transitively (e.g. ``_speculative_sampling``).
-    rebound = []
-    for live, patched in (
-        (_cg, patched_cg),
-        (_lp, patched_lp),
-        (_gen_utils, patched_gen),
-        (_cache_utils, patched_cache),
-    ):
-        for name, value in vars(patched).items():
-            if name.startswith("__"):
-                continue
-            if hasattr(live, name) and getattr(live, name) is value:
-                continue  # nothing to do — same identity
-            setattr(live, name, value)
-            rebound.append(f"{live.__name__}.{name}")
+    # Order matters: load and patch each module *before* loading the next,
+    # so later loads pick up the already-patched dependencies via their
+    # rewritten ``from transformers.X import Y`` imports.
+    plan = [
+        ("cache_utils.py", "fast_hsd._patched_cache_utils", _cache_utils),
+        ("generation/logits_process.py", "fast_hsd._patched_logits_process", _lp),
+        ("generation/candidate_generator.py", "fast_hsd._patched_candidate_generator", _cg),
+        ("generation/utils.py", "fast_hsd._patched_generation_utils", _gen_utils),
+    ]
+    rebound: list = []
+    for rel_path, qname, live in plan:
+        patched = _load_vendored_module(rel_path, qname)
+        rebound.extend(_rebind(live, patched))
 
     _INSTALLED = True
     if verbose:

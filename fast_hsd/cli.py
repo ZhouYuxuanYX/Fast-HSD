@@ -82,6 +82,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-new-tokens", type=int, default=2048)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
+        "--gamma",
+        type=int,
+        default=10,
+        help="Number of draft (assistant) tokens per SD block. Used by the "
+        "patched _speculative_sampling and by the block-efficiency formula.",
+    )
+    p.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="If set, truncate the benchmark to the first N questions "
+        "(handy for smoke tests).",
+    )
+    p.add_argument(
+        "--question-file",
+        type=str,
+        default=None,
+        help="Override the default question.jsonl path (benchmark-specific).",
+    )
+    p.add_argument(
         "--name",
         type=str,
         required=True,
@@ -111,6 +131,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the runtime monkey-patch (use if you copied the patched "
         "transformers files manually).",
     )
+    p.add_argument(
+        "--sync-patches",
+        action="store_true",
+        default=True,
+        help="Symlink vendored transformers patches into the active env's "
+        "site-packages at startup. Default: enabled. Falls back to the "
+        "runtime monkey-patch if symlinking fails.",
+    )
+    p.add_argument(
+        "--no-sync-patches",
+        dest="sync_patches",
+        action="store_false",
+        help="Skip the symlink sync. Use when the env is read-only or when "
+        "you intend to rely solely on the runtime monkey-patch.",
+    )
     return p
 
 
@@ -127,7 +162,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = build_parser().parse_args(argv)
 
-    if args.install_patches:
+    # Reproducibility: mirror the legacy seeding before any model touches torch.
+    import random
+    import numpy as np
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    try:
+        import torch
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+    except Exception:
+        pass
+
+    # Patch resolution order:
+    #   1. Symlink vendored files into site-packages (best-effort).
+    #   2. If sync succeeded, the runtime monkey-patch is redundant — skip it.
+    #   3. If sync was disabled or failed, fall back to the runtime patcher.
+    synced = False
+    if args.sync_patches:
+        try:
+            from fast_hsd.patches.sync import sync as sync_patches
+            sync_patches(verbose=True)
+            synced = True
+        except Exception as e:
+            logger.warning(
+                "patch sync failed (%s: %s); falling back to runtime monkey-patch.",
+                type(e).__name__,
+                e,
+            )
+
+    if args.install_patches and not synced:
         from fast_hsd.patches import install
         install(verbose=True)
 

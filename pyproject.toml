@@ -7,7 +7,7 @@ name = "fast-hsd"
 version = "0.1.0"
 description = "Unified diagnostic framework for lossy verification in speculative decoding."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = "==3.8.20"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "Yuxuan Zhou" },
