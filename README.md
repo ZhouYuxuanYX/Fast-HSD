@@ -6,7 +6,6 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2026.XXXXX-b31b1b.svg)](https://arxiv.org/abs/2026.XXXXX)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![CI](https://github.com/ZhouYuxuanYX/Fast-HSD/actions/workflows/lint.yaml/badge.svg)](https://github.com/ZhouYuxuanYX/Fast-HSD/actions/workflows/lint.yaml)
 [![Python 3.8.20](https://img.shields.io/badge/python-3.8.20-blue.svg)](https://www.python.org)
 
 </div>
