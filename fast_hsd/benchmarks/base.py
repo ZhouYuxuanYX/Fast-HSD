@@ -122,9 +122,22 @@ class BenchmarkEvaluator:
                 m.lm_head = new
 
         gamma = int(getattr(args, "gamma", 10))
+        conf = float(getattr(args, "assistant_confidence_threshold", 0.0))
         for m in (target, draft):
             if hasattr(m, "generation_config"):
                 m.generation_config.num_assistant_tokens = gamma
+                # num_assistant_tokens_schedule="constant" keeps gamma fixed
+                # rather than auto-tuning it per block.
+                m.generation_config.num_assistant_tokens_schedule = "constant"
+                # CRITICAL: HF defaults this to 0.4, which makes the draft
+                # *early-stop* its proposal whenever per-token confidence drops
+                # below the threshold — so blocks propose fewer than gamma
+                # tokens. The legacy eval_*.py scripts (and the paper) set this
+                # to 0 so the draft always proposes the full gamma. Leaving the
+                # 0.4 default makes block-efficiency / decoding-speed numbers
+                # diverge from the legacy runs (only ~65% of blocks reach gamma,
+                # and the gamma-filtered DS metric badly undercounts).
+                m.generation_config.assistant_confidence_threshold = conf
                 m.generation_config.temperature = args.temperature
 
         target.eval()

@@ -89,6 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
         "patched _speculative_sampling and by the block-efficiency formula.",
     )
     p.add_argument(
+        "--assistant-confidence-threshold",
+        type=float,
+        default=0.0,
+        help="Draft early-stop confidence threshold. HF defaults to 0.4 (draft "
+        "stops proposing once its per-token confidence drops below this, giving "
+        "variable sub-gamma blocks). The legacy scripts and the paper use 0.0 so "
+        "the draft always proposes the full gamma — keep 0.0 to match them.",
+    )
+    p.add_argument(
         "--num-samples",
         type=int,
         default=None,
