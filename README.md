@@ -10,16 +10,57 @@
 
 </div>
 
-Fast-HSD is a diagnostic framework for lossy verification in speculative decoding (SD).
-The accompanying paper shows that the prior zoo of methods collapses into two families
-— *truncation-based verification* (SpecCascade, Medusa typical-acceptance) and
-*collaborative verification* (CoS, Lenience) — and surfaces an overlooked pitfall:
-truncation-based methods can degrade quality far more than reported when measured
-against the *true* truncation-sampling baseline. Fast-HSD ships the analysis as
-runnable code and a four-benchmark harness designed to expose, rather than hide,
-the speed–quality trade-off.
+> **TL;DR** — The zoo of "lossy" speculative-decoding verifiers collapses into just **two families**, and one of them looks better than it is because it's measured against the wrong baseline. Fast-HSD turns that analysis into runnable code and a four-benchmark harness that *exposes* the speed–quality trade-off instead of hiding it.
 
-## Highlights
+## 📑 Table of Contents
+
+- [🔍 Overview](#-overview)
+- [✨ Highlights](#-highlights)
+- [📦 Installation](#-installation)
+  - [Patch the installed transformers](#patch-the-installed-transformers)
+- [🚀 Quick Start](#-quick-start)
+  - [CLI flags](#cli-flags)
+  - [Method argument reference](#method-argument-reference)
+  - [Output layout](#output-layout)
+  - [Benchmarks](#benchmarks)
+- [🧩 Using the patches from your own code](#-using-the-patches-from-your-own-code)
+- [🗂️ Repository layout](#-repository-layout)
+- [🧪 Testing](#-testing)
+- [📚 Citation](#-citation)
+- [🙏 Acknowledgments](#-acknowledgments)
+- [📰 News](#-news)
+- [📄 License](#-license)
+
+## 🔍 Overview
+
+Fast-HSD is a **diagnostic framework for lossy verification in speculative decoding (SD)**.
+
+Speculative decoding accelerates LLM inference by having a small *draft* model propose
+tokens that a large *target* model then verifies. "Lossy" verification relaxes the
+acceptance rule to accept more draft tokens — trading a little output quality for a lot
+of speed. A growing zoo of such methods has appeared, each with its own framing and
+hyperparameters, making them hard to compare.
+
+The accompanying [paper](_NeurIPS_2026__FSD.pdf) argues that existing work *overstates*
+the advantages of these methods under curated settings — selective hyperparameters or
+easy benchmarks — which hides the true speed–quality trade-off. Through a principled
+analysis of the distributions each method induces, the paper shows that the zoo of
+seemingly distinct approaches collapses into **two families**, each with its own
+takeaway:
+
+- **🪓 Truncation-based verification** — SpecCascade, Medusa typical-acceptance. **Pitfall:**
+  quality can degrade *significantly* versus the **true truncation-sampling baseline**,
+  because prior work compares against the unmodified target distribution and so misses the
+  distributional distortion these methods introduce.
+- **🤝 Collaborative verification** — CoS, Lenience. **Principle:** controlling the
+  *overshoot* of draft probabilities relative to target probabilities is essential to
+  prevent low-quality outputs.
+
+Fast-HSD ships this analysis as runnable code: the acceptance rules as importable
+functions, the transformers patches that implement them, and a four-benchmark diagnostic
+harness designed to expose — rather than hide — the speed–quality trade-off.
+
+## ✨ Highlights
 
 - **One package, one CLI.** `pip install -e .` then `fast-hsd-eval --benchmark math --method lenience --param 0.4 ...` — no more copy-files-into-site-packages dance.
 - **Acceptance rules as importable functions.** `fast_hsd.core.collaborative_verification` and `fast_hsd.core.truncation_verification` expose the paper's math as ~20 lines of NumPy/PyTorch each, ready to be cross-validated against your own implementation.
@@ -27,7 +68,7 @@ the speed–quality trade-off.
 - **Per-run output directory** with structured JSONL, human-readable responses, raw per-block SD telemetry, and a summary covering accuracy + block efficiency + decoding speed.
 - **Reproduces every table in the paper from a single shell command.** `bash examples/reproduce_table_main_results.sh`.
 
-## Install
+## 📦 Installation
 
 Fast-HSD pins `python==3.8.20` and `transformers==4.46.3` because the vendored
 patches target that exact release. Both the symlink-sync script and the
@@ -104,7 +145,7 @@ recommended. Copy the four files yourself:
 <env>/lib/python*/site-packages/transformers/cache_utils.py
 ```
 
-## Quick start
+## 🚀 Quick Start
 
 Every method ships with a small shell script in `examples/` that wraps the
 unified `fast-hsd-eval` CLI with a representative hyperparameter value. Pick
@@ -244,7 +285,7 @@ block efficiency + decoding speed at end of run; no offline pass needed.
 | `bfcl` | `EAGLE/eagle/data/bfcl/question.jsonl` (200 q's) | `ast.parse` of the model's `[func(...)]` list + category-specific checker | Bundled prompt is split on `"\nQuestion:"` so BFCL rules + function schemas land in the chat-template *system* role; without the split, models add free-text preamble that breaks the AST parser |
 | `mbppplus` | Prompts from bundled `EAGLE/eagle/data/mbppplus/question.jsonl`; `test_list` + `test_imports` fetched from HF `evalplus/mbppplus` on first `score()` (cached) | In-process `exec` sandbox with common imports pre-loaded; runs every assertion; 10-second SIGALRM timeout per problem | Set `--max-new-tokens 4000` (legacy default) for real runs |
 
-## Using the patches from your own code
+## 🧩 Using the patches from your own code
 
 The Fast-HSD patches can be reused outside this repository — e.g. inside
 SpecForge training pipelines or as a SGLang verification backend.
@@ -285,7 +326,7 @@ from fast_hsd.core.collaborative_verification import lenience_accept_prob
 from fast_hsd.core.truncation_verification import speccascade_accepts
 ```
 
-## Layout
+## 🗂️ Repository layout
 
 ```
 fast_hsd/
@@ -318,7 +359,7 @@ transformers/                   # Source of the vendored patches
 verification/                   # Legacy per-benchmark eval scripts (kept for reference)
 ```
 
-## Testing
+## 🧪 Testing
 
 The acceptance-rule unit tests are CPU-only and run in seconds:
 
@@ -330,7 +371,7 @@ They verify the paper's mathematical content: that `lenience=1` reduces to the
 lossless rule, that `cos_lambda=0` collapses to the draft, that SpecCascade with
 threshold 0 accepts everything, and that the lenience overshoot ceiling holds.
 
-## Citation
+## 📚 Citation
 
 ```bibtex
 @inproceedings{zhou2026unifying,
@@ -341,7 +382,7 @@ threshold 0 accepts everything, and that the lenience overshoot ceiling holds.
 }
 ```
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
 This codebase builds on [EAGLE](https://github.com/SafeAILab/EAGLE) (the
 vendored draft-model implementation under `EAGLE/`) and is engineered in the
@@ -350,12 +391,12 @@ team's training framework. We thank the authors of the methods we evaluate —
 SpecCascade, Medusa, CoS, and the speculative-decoding lenience formulation —
 for releasing high-quality reference implementations.
 
-## News
+## 📰 News
 
 - **2026-05**: Public refactor (`refactor/full`) — SpecForge-style packagization, symlink-sync patch installer, runtime patcher fallback, unified CLI with in-process scoring across all four benchmarks, per-run output directories, CI.
 - **2026-04**: Preprint submitted to NeurIPS 2026.
 - **2026-03**: Initial anonymous release at `anonymous.4open.science/r/Fast-HSD-E6AD/`.
 
-## License
+## 📄 License
 
 Apache 2.0 — see [LICENSE](LICENSE).
