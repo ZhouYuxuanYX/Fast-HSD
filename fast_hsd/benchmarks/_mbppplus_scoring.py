@@ -144,14 +144,15 @@ def score_mbppplus(
     test_imports: Optional[Sequence[str]] = None,
     timeout: int = 10,
 ) -> tuple:
-    """Return ``(passed, extracted_code_snippet)``.
+    """Return ``(passed, extracted_code_snippet, (n_passed, n_total))``.
 
-    The second tuple element is a truncated version of the extracted code
-    (first 200 chars) so it fits into the JSONL row's ``extracted_answer``
-    field without bloating the file. Use ``run_pass_at_1`` directly if you
-    need the full pass count.
+    - ``passed`` — strict all-assertions-pass (problem-level correctness).
+    - ``extracted_code_snippet`` — ``"[n/m] <first 200 chars of code>"``, kept
+      short so it fits the JSONL ``extracted_answer`` field.
+    - ``(n_passed, n_total)`` — assertion-level counts, aggregated by the
+      runner into the summary's ``subtest_pass_rate`` (MBPP+ "test pass rate").
     """
     passed, n_passed, n_total = run_pass_at_1(response, test_list, test_imports, timeout=timeout)
     extracted = extract_code(response)
     summary = f"[{n_passed}/{n_total}] " + (extracted[:200].replace("\n", "\\n"))
-    return (passed, summary)
+    return (passed, summary, (n_passed, n_total))

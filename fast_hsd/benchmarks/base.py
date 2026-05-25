@@ -39,6 +39,12 @@ class BenchmarkRecord:
     level: Optional[str] = None
     prob_type: Optional[str] = None
 
+    # Optional partial-credit sub-test counts (e.g. MBPP+ assertions passed /
+    # total). When set, ``run`` aggregates them into a ``subtest_pass_rate`` in
+    # the summary. ``correct`` stays the strict all-pass metric.
+    num_subtests_passed: Optional[int] = None
+    num_subtests_total: Optional[int] = None
+
     # Aggregated SD telemetry (sums across blocks).
     accepted_tokens: int = -1
     proposed_tokens: int = -1
@@ -268,17 +274,25 @@ class BenchmarkEvaluator:
     # ----- Scoring shim -------------------------------------------------------
 
     @staticmethod
-    def _unpack_score(rv) -> Tuple[Optional[bool], Optional[str]]:
+    def _unpack_score(rv) -> Tuple[Optional[bool], Optional[str], Optional[Tuple[int, int]]]:
+        """Normalize a ``score()`` return value.
+
+        Accepts ``None``, a bare ``bool``, ``(correct, extracted)``, or
+        ``(correct, extracted, (n_passed, n_total))``. Returns the triple
+        ``(correct, extracted, subtests)``.
+        """
         if rv is None:
-            return None, None
+            return None, None, None
         if isinstance(rv, tuple):
             correct = rv[0]
             extracted = rv[1] if len(rv) > 1 else None
+            subtests = rv[2] if len(rv) > 2 else None
             return (
                 None if correct is None else bool(correct),
                 None if extracted is None else str(extracted),
+                tuple(subtests) if subtests is not None else None,
             )
-        return bool(rv), None
+        return bool(rv), None, None
 
     # ----- Top-level driving loop --------------------------------------------
 
@@ -320,9 +334,11 @@ class BenchmarkEvaluator:
                 rec.gold = q.get("gold")
                 rec.level = q.get("level")
                 rec.prob_type = q.get("prob_type") or q.get("type")
-                correct, extracted = self._unpack_score(self.score(q, rec.response))
+                correct, extracted, subtests = self._unpack_score(self.score(q, rec.response))
                 rec.correct = correct
                 rec.extracted_answer = extracted
+                if subtests is not None:
+                    rec.num_subtests_passed, rec.num_subtests_total = subtests
 
                 if rec.correct is not None:
                     n_scored += 1
@@ -429,7 +445,13 @@ def _summarize(
     )
     accuracy = (n_correct / n_scored) if n_scored else float("nan")
 
-    return {
+    # Optional partial-credit (e.g. MBPP+ assertion-level pass rate). Only
+    # emitted when at least one record carries sub-test counts.
+    subtests_passed = sum(r.num_subtests_passed or 0 for r in records if r.num_subtests_total)
+    subtests_total = sum(r.num_subtests_total or 0 for r in records if r.num_subtests_total)
+    subtest_pass_rate = (subtests_passed / subtests_total) if subtests_total else None
+
+    summary = {
         "name": args.name,
         "benchmark": getattr(args, "benchmark", None),
         "method": method_cfg.get("method"),
@@ -442,6 +464,8 @@ def _summarize(
         "num_samples": len(records),
         "num_scored": n_scored,
         "num_correct": n_correct,
+        # Strict, problem-level metric: a problem counts only if it is fully
+        # correct (for MBPP+, *all* assertions pass).
         "accuracy": accuracy,
         "block_efficiency": block_efficiency,
         "decoding_speed": decoding_speed,
@@ -451,6 +475,12 @@ def _summarize(
         "total_wall_seconds": wall_seconds,
         "num_full_gamma_blocks": n_full_blocks,
     }
+    if subtest_pass_rate is not None:
+        # Assertion-level partial-credit metric (MBPP+ "test pass rate").
+        summary["subtest_pass_rate"] = subtest_pass_rate
+        summary["subtests_passed"] = subtests_passed
+        summary["subtests_total"] = subtests_total
+    return summary
 
 
 def _print_summary(bench: str, summary: Dict[str, Any], args, out_path: str, summary_path: str) -> None:
@@ -468,7 +498,14 @@ def _print_summary(bench: str, summary: Dict[str, Any], args, out_path: str, sum
         f"Seed / temp     : {summary['seed']} / {summary['temperature']}",
         f"Samples scored  : {summary['num_correct']}/{summary['num_scored']} (of {summary['num_samples']})",
         "-" * 60,
-        f"Accuracy           : {summary['accuracy']:.4f}",
+        f"Accuracy (all-pass): {summary['accuracy']:.4f}",
+    ]
+    if "subtest_pass_rate" in summary:
+        lines.append(
+            f"Test pass rate     : {summary['subtest_pass_rate']:.4f} "
+            f"({summary['subtests_passed']}/{summary['subtests_total']} sub-tests)"
+        )
+    lines += [
         f"Block efficiency   : {summary['block_efficiency']:.2f} (avg accepted tokens per full-gamma block)",
         f"Decoding speed     : {summary['decoding_speed']:.2f} tok/s (gamma-normalized)",
         f"Tokens/s           : {summary['tokens_per_second']:.2f}",
