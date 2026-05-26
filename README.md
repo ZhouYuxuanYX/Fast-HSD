@@ -371,17 +371,6 @@ They verify the paper's mathematical content: that `lenience=1` reduces to the
 lossless rule, that `cos_lambda=0` collapses to the draft, that SpecCascade with
 threshold 0 accepts everything, and that the lenience overshoot ceiling holds.
 
-## 📚 Citation
-
-```bibtex
-@inproceedings{zhou2026unifying,
-  title={Unifying Lossy Verification in Speculative Decoding: Underlying Mechanisms and Empirical Pitfalls},
-  author={Zhou, Yuxuan and Wang, Tianyu and Wu, Qifeng and Wu, Fengyi and Li, Heng and Xiao, Zikai and Wang, Wenbin and Shang, Junyuan and Cheng, Zhi-Qi},
-  booktitle={Advances in Neural Information Processing Systems},
-  year={2026}
-}
-```
-
 ## 🙏 Acknowledgments
 
 This codebase builds on [EAGLE](https://github.com/SafeAILab/EAGLE) (the
