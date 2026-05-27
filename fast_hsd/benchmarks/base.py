@@ -193,6 +193,12 @@ class BenchmarkEvaluator:
         """
         import torch
 
+        # EAGLE-3 runs through EaModel.eagenerate (tree drafting), NOT HF's
+        # assisted-generation ``generate(assistant_model=...)`` path. Route it
+        # to the dedicated method.
+        if getattr(args, "use_eagle3", False):
+            return self._generate_eagle(target, tokenizer, prompt, args, method_cfg, system_prompt)
+
         method = method_cfg.get("method", "baseline")
         param = method_cfg.get("param")
 
@@ -268,6 +274,85 @@ class BenchmarkEvaluator:
             target_eval_per_block=target_eval_pb,
             sample_length_per_block=sample_length_pb,
             total_step_per_block=total_step_pb,
+            n_matched_per_block=n_matched_pb,
+        )
+
+    # EAGLE method → eagenerate kwargs. Mirrors the plain-SD mapping: the
+    # *_spd / verification params drive evaluate_posterior, while min_p / eta
+    # "baseline" params drive the target's truncation sampling.
+    _EAGLE_METHOD_KWARGS = {
+        "baseline": {"lenience": 1.0},
+        "lenience": {"lenience": "param"},
+        "speccascade": {"min_p": "param"},
+        "typical_sampling": {"eta": "param"},
+        "min_p_sampling": {"min_p_baseline": "param"},
+        "eta_sampling": {"eta_baseline": "param"},
+    }
+
+    def _generate_eagle(
+        self, model, tokenizer, prompt, args, method_cfg, system_prompt
+    ) -> BenchmarkRecord:
+        """Generate one sample with EAGLE-3 via ``EaModel.eagenerate``.
+
+        Mirrors the legacy ``gen_ea_answer_*.py`` call: chat-templated prompt,
+        ``log=True`` telemetry, lossy-verification kwargs routed through
+        ``eagenerate``. Per-step ``step_stats`` (accept_length, block_size)
+        are stored so the summary can report EAGLE block efficiency / speed.
+        """
+        import torch
+
+        method = method_cfg.get("method", "baseline")
+        param = method_cfg.get("param")
+        if method not in self._EAGLE_METHOD_KWARGS:
+            raise ValueError(f"method {method!r} is not supported on the EAGLE-3 path")
+        eg_kwargs = {
+            k: (float(param) if v == "param" else v)
+            for k, v in self._EAGLE_METHOD_KWARGS[method].items()
+        }
+
+        full_prompt = self._wrap_with_chat_template(tokenizer, prompt, system_text=system_prompt)
+        # add_special_tokens=False — the chat template already injects BOS/headers
+        # (matches the legacy gen_ea_answer_*.py tokenization).
+        input_ids = tokenizer([full_prompt], add_special_tokens=False).input_ids
+        input_ids = torch.as_tensor(input_ids).to(next(model.parameters()).device)
+        input_len = input_ids.shape[1]
+
+        is_llama3 = "llama-3" in args.target_model.lower() or "llama3" in args.target_model.lower()
+
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            out_ids, new_token, idx, step_stats = model.eagenerate(
+                input_ids,
+                temperature=args.temperature,
+                max_new_tokens=args.max_new_tokens,
+                log=True,
+                is_llama3=is_llama3,
+                **eg_kwargs,
+            )
+        dt = time.perf_counter() - t0
+
+        gen_ids = out_ids[0][input_len:]
+        text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+
+        # step_stats: list of (accept_length, block_size) per EAGLE step.
+        n_matched_pb = [int(a) for a, _ in step_stats]
+        block_size_pb = [int(b) for _, b in step_stats]
+        # Per-step tokens committed = accepted drafts + 1 verified token.
+        sample_length_pb = [a + 1 for a in n_matched_pb]
+        return BenchmarkRecord(
+            question_id="",
+            prompt=full_prompt,
+            response=text,
+            gold=None,
+            correct=None,
+            accepted_tokens=sum(n_matched_pb) if n_matched_pb else -1,
+            proposed_tokens=sum(block_size_pb) if block_size_pb else -1,
+            decoding_seconds=dt,
+            output_tokens=int(new_token),
+            draft_eval_per_block=block_size_pb,
+            target_eval_per_block=[1] * len(step_stats),
+            sample_length_per_block=sample_length_pb,
+            total_step_per_block=[1] * len(step_stats),
             n_matched_per_block=n_matched_pb,
         )
 
@@ -421,24 +506,38 @@ def _summarize(
     Falls back gracefully when no SD telemetry is available.
     """
     gamma = int(getattr(args, "gamma", 10))
+    is_eagle = bool(getattr(args, "use_eagle3", False))
 
-    full_block_accepts: List[int] = []
     total_decode_time = 0.0
     total_output_tokens = 0
     for r in records:
         total_decode_time += r.decoding_seconds
         total_output_tokens += r.output_tokens
-        for de, sl in zip(r.draft_eval_per_block, r.sample_length_per_block):
-            if de == gamma:
-                full_block_accepts.append(sl)
 
-    n_full_blocks = len(full_block_accepts)
-    if n_full_blocks > 0 and total_decode_time > 0:
-        block_efficiency = sum(full_block_accepts) / n_full_blocks
-        decoding_speed = n_full_blocks / total_decode_time * gamma
+    if is_eagle:
+        # EAGLE's tree blocks have a variable size, so the fixed-gamma filter
+        # doesn't apply. Block efficiency = mean tokens committed per EAGLE
+        # step (accepted drafts + 1); n_full_blocks here is the step count.
+        all_step_tokens = [sl for r in records for sl in r.sample_length_per_block]
+        n_full_blocks = len(all_step_tokens)
+        block_efficiency = (sum(all_step_tokens) / n_full_blocks) if n_full_blocks else float("nan")
+        # EAGLE has no gamma normalization; report raw throughput.
+        decoding_speed = (
+            total_output_tokens / total_decode_time if total_decode_time > 0 else float("nan")
+        )
     else:
-        block_efficiency = float("nan")
-        decoding_speed = float("nan")
+        full_block_accepts: List[int] = []
+        for r in records:
+            for de, sl in zip(r.draft_eval_per_block, r.sample_length_per_block):
+                if de == gamma:
+                    full_block_accepts.append(sl)
+        n_full_blocks = len(full_block_accepts)
+        if n_full_blocks > 0 and total_decode_time > 0:
+            block_efficiency = sum(full_block_accepts) / n_full_blocks
+            decoding_speed = n_full_blocks / total_decode_time * gamma
+        else:
+            block_efficiency = float("nan")
+            decoding_speed = float("nan")
 
     tokens_per_second = (
         total_output_tokens / total_decode_time if total_decode_time > 0 else float("nan")

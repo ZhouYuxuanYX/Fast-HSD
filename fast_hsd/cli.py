@@ -128,6 +128,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the EAGLE-3 variant of the pipeline instead of plain SD.",
     )
     p.add_argument(
+        "--eagle-total-token",
+        type=int,
+        default=60,
+        help="EAGLE-3 draft-tree total tokens (legacy default 60).",
+    )
+    p.add_argument(
+        "--eagle-depth",
+        type=int,
+        default=5,
+        help="EAGLE-3 draft-tree depth (legacy default 5).",
+    )
+    p.add_argument(
+        "--eagle-top-k",
+        type=int,
+        default=10,
+        help="EAGLE-3 draft-tree top-k per layer (legacy default 10).",
+    )
+    p.add_argument(
         "--install-patches",
         action="store_true",
         default=True,
