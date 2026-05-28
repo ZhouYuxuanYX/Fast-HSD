@@ -250,26 +250,26 @@ The final summary also gets printed to stdout at end of run:
 
 ```
 ============================================================
-FINAL RESULTS SUMMARY — math
+FINAL RESULTS SUMMARY — bfcl
 ============================================================
-Run name        : sd_baseline_math_seed0
+Run name        : baseline_bfcl_seed0
 Method/param    : baseline/None
 Target model    : Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8
 Draft model     : Qwen/Qwen2.5-0.5B-Instruct-GPTQ-Int8
 Gamma           : 10
 Seed / temp     : 0 / 0.7
-Samples scored  : 167/500 (of 500)
+Samples scored  : 177/200 (of 200)
 ------------------------------------------------------------
-Accuracy           : 0.3340
-Block efficiency   : 8.42 (avg accepted tokens per full-gamma block)
-Decoding speed     : 6.21 tok/s (gamma-normalized)
-Tokens/s           : 6.08
-Total decode time  : 41203.15s
-Total output tokens: 250488
-Full-gamma blocks  : 25467
+Accuracy (all-pass): 0.8850
+Block efficiency   : 8.76 (avg accepted tokens per full-gamma block)
+Decoding speed     : 6.89 tok/s (gamma-normalized)
+Tokens/s           : 6.71
+Total decode time  : 1945.47s
+Total output tokens: 13046
+Full-gamma blocks  : 1340
 ============================================================
-Rows JSONL        : outputs/math/sd_baseline_math_seed0/rows.jsonl
-Summary JSON      : outputs/math/sd_baseline_math_seed0/summary.json
+Rows JSONL        : outputs/bfcl/baseline_bfcl_seed0/rows.jsonl
+Summary JSON      : outputs/bfcl/baseline_bfcl_seed0/summary.json
 ============================================================
 ```
 
