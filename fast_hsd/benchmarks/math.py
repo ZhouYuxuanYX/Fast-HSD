@@ -13,6 +13,8 @@ Reproduces the scoring + prompting of ``verification/src/MATH/eval_math.py``:
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from fast_hsd.benchmarks._math_scoring import (
@@ -21,6 +23,8 @@ from fast_hsd.benchmarks._math_scoring import (
     is_equiv,
 )
 from fast_hsd.benchmarks.base import BenchmarkEvaluator
+
+logger = logging.getLogger("fast_hsd.benchmarks.math")
 
 __all__ = ["MathEvaluator", "run"]
 
@@ -66,6 +70,23 @@ class MathEvaluator(BenchmarkEvaluator):
         if gold is None:
             return (None, extracted)
         return (is_equiv(extracted, gold), extracted)
+
+    def run(self, args, method_cfg) -> int:
+        rc = super().run(args, method_cfg)
+        # Inline the end-of-run analyzer report so users get the same view as
+        # ``scripts/results_analysis_math.py`` without running a second tool.
+        # Uses the shared ``_math_report`` module so the numbers here match
+        # the per-row ``correct`` field written during the loop.
+        try:
+            from fast_hsd.benchmarks import _math_report  # local import: avoids cycles
+            rows_path = os.path.join(args.output_dir, self.name, args.name, "rows.jsonl")
+            question_file = getattr(args, "question_file", None) or DEFAULT_QUESTION_FILE
+            refs = _math_report.load_references(question_file)
+            stats = _math_report.analyze(rows_path, refs=refs)
+            _math_report.print_stats(rows_path, stats, expected_n=len(refs))
+        except Exception as e:
+            logger.warning("end-of-run math report failed (%s: %s)", type(e).__name__, e)
+        return rc
 
 
 def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:

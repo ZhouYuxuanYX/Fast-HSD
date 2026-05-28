@@ -44,16 +44,23 @@ def extract_boxed_answer(solution: str) -> str:
     return ""
 
 
+_RE_HASH_MARK = re.compile(r"####\s*([\d,\.\-]+)")
+
+
 def extract_answer(response: str) -> str:
     """Extract the model's answer from a response string.
 
-    Tries ``\\boxed{}`` first, then "the answer is X", then ``= X`` at end of
-    line, then ``$...$`` at the end, then ``**X**``. Returns ``""`` if no
-    pattern matches.
+    Tries in order: ``\\boxed{}``, ``#### X`` (GSM8K marker),
+    "the answer is X", ``= X`` at end of line, ``$...$`` at the end,
+    ``**X**``. Returns ``""`` if no pattern matches.
     """
     boxed = extract_boxed_answer(response)
     if boxed:
         return boxed
+
+    m = _RE_HASH_MARK.search(response)
+    if m:
+        return m.group(1).replace(",", "").strip()
 
     m = re.search(r"[Tt]he\s+(?:final\s+)?answer\s+is[:\s]+([^\.\n]+)", response)
     if m:
@@ -72,6 +79,22 @@ def extract_answer(response: str) -> str:
         return m.group(1).strip()
 
     return ""
+
+
+def extract_ref_answer(text: str) -> Optional[str]:
+    """Extract the ground-truth answer from a reference solution.
+
+    Prefers ``\\boxed{}``, then ``####`` marker, then the last numeric token
+    in the text. Returns ``None`` only if all three fall through.
+    """
+    boxed = extract_boxed_answer(text)
+    if boxed:
+        return boxed
+    m = _RE_HASH_MARK.search(text)
+    if m:
+        return m.group(1).replace(",", "").strip()
+    nums = re.findall(r"[-]?\d+(?:,\d{3})*(?:\.\d+)?", text)
+    return nums[-1].replace(",", "") if nums else None
 
 
 def normalize_answer(answer: str) -> str:
@@ -150,13 +173,33 @@ def _normalize_element(elem: str) -> Optional[float]:
         return None
 
 
+def _sympy_equiv(pred_norm: str, gt_norm: str) -> bool:
+    """Optional symbolic-equivalence check via sympy. Silently returns False
+    if sympy / parse_latex is unavailable or either side won't parse."""
+    try:
+        from sympy import simplify
+        from sympy.parsing.latex import parse_latex
+    except Exception:
+        return False
+    try:
+        ps = parse_latex(pred_norm)
+        gs = parse_latex(gt_norm)
+    except Exception:
+        return False
+    try:
+        return bool(simplify(ps - gs) == 0)
+    except Exception:
+        return False
+
+
 def is_equiv(pred: str, gt: str) -> bool:
     """Compare a predicted answer to ground truth, returning True if equivalent.
 
     Handles: multiple gt forms separated by ``=``, direct (case-insensitive)
     string equality after normalization, comma-separated tuples (order-
-    independent, both string and numeric), and numerical equality with 1e-6
-    tolerance.
+    independent, both string and numeric), numerical equality with **relative**
+    tolerance (``|p - g| <= 1e-6 * max(1, |g|)``), and an optional sympy
+    symbolic fallback.
     """
     if not pred or not gt:
         return False
@@ -185,13 +228,20 @@ def is_equiv(pred: str, gt: str) -> bool:
             if None not in pred_nums and None not in gt_nums:
                 pred_sorted = sorted(pred_nums)
                 gt_sorted = sorted(gt_nums)
-                if all(abs(p - g) <= 1e-6 for p, g in zip(pred_sorted, gt_sorted)):
+                if all(
+                    abs(p - g) <= 1e-6 * max(1.0, abs(g))
+                    for p, g in zip(pred_sorted, gt_sorted)
+                ):
                     return True
 
-    # Numerical equality on the whole answer.
+    # Numerical equality on the whole answer (relative tolerance).
     pred_num = _normalize_element(pred_norm)
     gt_num = _normalize_element(gt_norm)
     if pred_num is not None and gt_num is not None:
-        return abs(pred_num - gt_num) <= 1e-6
+        return abs(pred_num - gt_num) <= 1e-6 * max(1.0, abs(gt_num))
+
+    # Symbolic fallback (cheap if sympy/parse_latex unavailable).
+    if _sympy_equiv(pred_norm, gt_norm):
+        return True
 
     return False
