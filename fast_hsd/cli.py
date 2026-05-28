@@ -113,8 +113,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--name",
         type=str,
-        required=True,
-        help="Run name. Used to construct the output filename.",
+        default=None,
+        help="Optional tag appended to the auto-generated run id. "
+        "The output directory is always disambiguated by method/param/"
+        "benchmark/seed (and an 'eagle3_' prefix when --use-eagle3); "
+        "--name is appended as a suffix so reruns with the same setup "
+        "but a different --name go to different directories.",
+    )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow overwriting an existing non-empty output directory. "
+        "By default, fast-hsd-eval refuses to clobber a run that already "
+        "wrote rows.jsonl.",
     )
     p.add_argument(
         "--output-dir",

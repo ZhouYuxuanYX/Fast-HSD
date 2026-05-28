@@ -21,5 +21,4 @@ fast-hsd-eval \
     --target-model "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8" \
     --draft-model  "Qwen/Qwen2.5-0.5B-Instruct-GPTQ-Int8" \
     --temperature 0.7 \
-    --seed "$SEED" \
-    --name "typical_${ETA_CUTOFF}_${BENCH}_seed${SEED}"
+    --seed "$SEED"

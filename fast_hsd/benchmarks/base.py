@@ -389,9 +389,26 @@ class BenchmarkEvaluator:
             questions = questions[: int(num_samples)]
         logger.info("Loaded %d questions from %s", len(questions), self.name)
 
-        # One subdirectory per run, mirroring the legacy
-        # ``results/{name}/outputs/{accuracy,efficiency,final_result}/`` layout.
-        out_dir = os.path.join(args.output_dir, self.name, args.name)
+        # Auto-compose a canonical run id from method/param/bench/seed (and
+        # eagle3 flag) so different hyperparameter values land in different
+        # directories. ``args.name`` (when given) is appended as a tag so
+        # users can label specific runs (e.g. "ablation1") without losing
+        # the hyperparameter disambiguation.
+        run_id = _canonical_run_id(args, method_cfg)
+        # Stash the resolved id on args so summary.json/print_summary use it.
+        args.name = run_id
+        out_dir = os.path.join(args.output_dir, self.name, run_id)
+        rows_existing = os.path.join(out_dir, "rows.jsonl")
+        if (
+            os.path.exists(rows_existing)
+            and os.path.getsize(rows_existing) > 0
+            and not getattr(args, "overwrite", False)
+        ):
+            raise SystemExit(
+                f"Refusing to overwrite existing run at {out_dir!r}\n"
+                f"(rows.jsonl is non-empty). Pass --overwrite to clobber, or "
+                f"--name <tag> to land in a new directory."
+            )
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, "rows.jsonl")
         responses_path = os.path.join(out_dir, "responses.txt")
@@ -458,6 +475,29 @@ class BenchmarkEvaluator:
 
 
 # --- helpers ---------------------------------------------------------------
+
+
+def _canonical_run_id(args, method_cfg) -> str:
+    """Build the run id used as the output sub-directory name.
+
+    Format: ``[eagle3_]<method>[_<param>]_<benchmark>_seed<seed>[_<name>]``.
+    The ``--name`` tag (if any) is appended last so it acts as a label,
+    never displacing the hyperparameter disambiguation.
+    """
+    parts: List[str] = []
+    if getattr(args, "use_eagle3", False):
+        parts.append("eagle3")
+    method = method_cfg.get("method", "baseline")
+    parts.append(str(method))
+    param = method_cfg.get("param")
+    if param is not None:
+        parts.append(str(param))
+    parts.append(str(getattr(args, "benchmark", "")))
+    parts.append(f"seed{getattr(args, 'seed', 0)}")
+    tag = getattr(args, "name", None)
+    if tag:
+        parts.append(str(tag))
+    return "_".join(p for p in parts if p)
 
 
 def _write_response_block(fh, rec: BenchmarkRecord, idx: int, total: int) -> None:

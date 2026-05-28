@@ -16,5 +16,4 @@ fast-hsd-eval \
     --target-model "meta-llama/Llama-3.1-8B-Instruct" \
     --draft-model  "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B" \
     --temperature 0.7 \
-    --seed "$SEED" \
-    --name "eagle3_typical_${ETA_CUTOFF}_${BENCH}_seed${SEED}"
+    --seed "$SEED"
