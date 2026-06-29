@@ -1,0 +1,6 @@
+{
+  "method": "typical_sampling",
+  "description": "Typical-acceptance verification (Medusa). Accept iff x is in the eta-sampling allowed set of p.",
+  "param_name": "eta_cutoff",
+  "sweep": [0.05, 0.10, 0.15, 0.20, 0.25]
+}

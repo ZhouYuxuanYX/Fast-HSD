@@ -2,7 +2,7 @@ import json
 import numpy as np
 
 json_files=[
-    "/home/lyh/code/nlp/EAGLE/data/mt_bench/model_answer/vicuna-7b-alpha-temperature-0.0.jsonl",
+    "",
 ]
 
 

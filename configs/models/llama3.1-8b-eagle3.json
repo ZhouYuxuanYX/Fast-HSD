@@ -1,0 +1,9 @@
+{
+  "target_model": "meta-llama/Llama-3.1-8B-Instruct",
+  "draft_model": "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B",
+  "temperature": 0.7,
+  "max_new_tokens": 2048,
+  "chat_template": "llama3",
+  "use_eagle3": true,
+  "comment": "EAGLE-3 results pair (paper §4 / Table eagle_multi). Block size = 7."
+}

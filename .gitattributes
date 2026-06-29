@@ -1,0 +1,11 @@
+# Normalize line endings to LF on commit to avoid Windows CRLF noise.
+* text=auto eol=lf
+
+# Shell scripts and Python files must use LF.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Mark binaries explicitly so git doesn't try to diff them.
+*.png binary
+*.pdf binary
+*.jsonl text eol=lf

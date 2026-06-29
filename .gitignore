@@ -1,2 +1,60 @@
-__pycache__
-*.json
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+develop-eggs/
+parts/
+sdist/
+var/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# Outputs / experiment artifacts — uncomment if you want these ignored
+# outputs/
+# checkpoints/
+# wandb/
+# *.jsonl
+
+# Local scratch
+.scratch/
+scratch/
+test_write_canary.txt
+
+sbatch/
+outputs/
+*.pdf

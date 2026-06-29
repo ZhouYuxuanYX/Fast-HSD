@@ -1,0 +1,6 @@
+{
+  "method": "cos",
+  "description": "Collaborative Decoding via Speculation (Fu et al., 2025). Yields a convex mixture lam*p + (1-lam)*q.",
+  "param_name": "cos_lambda",
+  "sweep": [0.2, 0.4, 0.6, 0.8]
+}

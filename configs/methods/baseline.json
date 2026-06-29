@@ -1,0 +1,6 @@
+{
+  "method": "baseline",
+  "description": "Lossless speculative decoding (Leviathan et al., 2023). No lossy verification.",
+  "param": null,
+  "sweep": [null]
+}
