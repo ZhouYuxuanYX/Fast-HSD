@@ -380,12 +380,11 @@ team's training framework. We thank the authors of the methods we evaluate —
 SpecCascade, Medusa, CoS, and the speculative-decoding lenience formulation —
 for releasing high-quality reference implementations.
 
-## 📰 News
+## News
 
 - **2026-05**: Public refactor (`refactor/full`) — SpecForge-style packagization, symlink-sync patch installer, runtime patcher fallback, unified CLI with in-process scoring across all four benchmarks, per-run output directories, CI.
-- **2026-04**: Preprint submitted to NeurIPS 2026.
 - **2026-03**: Initial anonymous release at `anonymous.4open.science/r/Fast-HSD-E6AD/`.
 
-## 📄 License
+## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
