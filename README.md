@@ -23,13 +23,13 @@
   - [Method argument reference](#method-argument-reference)
   - [Output layout](#output-layout)
   - [Benchmarks](#benchmarks)
-- [🧩 Using the patches from your own code](#-using-the-patches-from-your-own-code)
-- [🗂️ Repository layout](#-repository-layout)
-- [🧪 Testing](#-testing)
-- [📚 Citation](#-citation)
-- [🙏 Acknowledgments](#-acknowledgments)
-- [📰 News](#-news)
-- [📄 License](#-license)
+- [Using the patches from your own code](#-using-the-patches-from-your-own-code)
+- [Repository layout](#-repository-layout)
+- [Testing](#-testing)
+- [Citation](#-citation)
+- [Acknowledgments](#-acknowledgments)
+- [News](#-news)
+- [License](#-license)
 
 ## 🔍 Overview
 
