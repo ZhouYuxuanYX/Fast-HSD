@@ -12,7 +12,7 @@
 
 > **TL;DR** — The zoo of "lossy" speculative-decoding verifiers collapses into just **two families**, and one of them looks better than it is because it's measured against the wrong baseline. Fast-HSD turns that analysis into runnable code and a four-benchmark harness that *exposes* the speed–quality trade-off instead of hiding it.
 
-## 📑 Table of Contents
+## Table of Contents
 
 - [Overview](#-overview)
 - [Highlights](#-highlights)
