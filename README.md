@@ -14,11 +14,11 @@
 
 ## 📑 Table of Contents
 
-- [🔍 Overview](#-overview)
-- [✨ Highlights](#-highlights)
-- [📦 Installation](#-installation)
+- [Overview](#-overview)
+- [Highlights](#-highlights)
+- [Installation](#-installation)
   - [Patch the installed transformers](#patch-the-installed-transformers)
-- [🚀 Quick Start](#-quick-start)
+- [Quick Start](#-quick-start)
   - [CLI flags](#cli-flags)
   - [Method argument reference](#method-argument-reference)
   - [Output layout](#output-layout)
@@ -31,7 +31,7 @@
 - [News](#-news)
 - [License](#-license)
 
-## 🔍 Overview
+## Overview
 
 Fast-HSD is a **diagnostic framework for lossy verification in speculative decoding (SD)**.
 
@@ -48,11 +48,11 @@ analysis of the distributions each method induces, the paper shows that the zoo 
 seemingly distinct approaches collapses into **two families**, each with its own
 takeaway:
 
-- **🪓 Truncation-based verification** — SpecCascade, Medusa typical-acceptance. **Pitfall:**
+- ** Truncation-based verification** — SpecCascade, Medusa typical-acceptance. **Pitfall:**
   quality can degrade *significantly* versus the **true truncation-sampling baseline**,
   because prior work compares against the unmodified target distribution and so misses the
   distributional distortion these methods introduce.
-- **🤝 Collaborative verification** — CoS, Lenience. **Principle:** controlling the
+- ** Collaborative verification** — CoS, Lenience. **Principle:** controlling the
   *overshoot* of draft probabilities relative to target probabilities is essential to
   prevent low-quality outputs.
 
@@ -60,7 +60,7 @@ Fast-HSD ships this analysis as runnable code: the acceptance rules as importabl
 functions, the transformers patches that implement them, and a four-benchmark diagnostic
 harness designed to expose — rather than hide — the speed–quality trade-off.
 
-## ✨ Highlights
+## Highlights
 
 - **One package, one CLI.** `pip install -e .` then `fast-hsd-eval --benchmark math --method lenience --param 0.4 ...` — no more copy-files-into-site-packages dance.
 - **Acceptance rules as importable functions.** `fast_hsd.core.collaborative_verification` and `fast_hsd.core.truncation_verification` expose the paper's math as ~20 lines of NumPy/PyTorch each, ready to be cross-validated against your own implementation.
@@ -68,7 +68,7 @@ harness designed to expose — rather than hide — the speed–quality trade-of
 - **Per-run output directory** with structured JSONL, human-readable responses, raw per-block SD telemetry, and a summary covering accuracy + block efficiency + decoding speed.
 - **Reproduces every table in the paper from a single shell command.** `bash examples/reproduce_table_main_results.sh`.
 
-## 📦 Installation
+## Installation
 
 Fast-HSD pins `python==3.8.20` and `transformers==4.46.3` because the vendored
 patches target that exact release. Both the symlink-sync script and the
