@@ -285,7 +285,7 @@ block efficiency + decoding speed at end of run; no offline pass needed.
 | `bfcl` | `EAGLE/eagle/data/bfcl/question.jsonl` (200 q's) | `ast.parse` of the model's `[func(...)]` list + category-specific checker | Bundled prompt is split on `"\nQuestion:"` so BFCL rules + function schemas land in the chat-template *system* role; without the split, models add free-text preamble that breaks the AST parser |
 | `mbppplus` | Prompts from bundled `EAGLE/eagle/data/mbppplus/question.jsonl`; `test_list` + `test_imports` fetched from HF `evalplus/mbppplus` on first `score()` (cached) | In-process `exec` sandbox with common imports pre-loaded; runs every assertion; 10-second SIGALRM timeout per problem | Set `--max-new-tokens 4000` (legacy default) for real runs |
 
-## 🧩 Using the patches from your own code
+## Using the patches from your own code
 
 The Fast-HSD patches can be reused outside this repository — e.g. inside
 SpecForge training pipelines or as a SGLang verification backend.
@@ -326,7 +326,7 @@ from fast_hsd.core.collaborative_verification import lenience_accept_prob
 from fast_hsd.core.truncation_verification import speccascade_accepts
 ```
 
-## 🗂️ Repository layout
+## Repository layout
 
 ```
 fast_hsd/
@@ -359,7 +359,7 @@ transformers/                   # Source of the vendored patches
 verification/                   # Legacy per-benchmark eval scripts (kept for reference)
 ```
 
-## 🧪 Testing
+## Testing
 
 The acceptance-rule unit tests are CPU-only and run in seconds:
 
@@ -371,7 +371,7 @@ They verify the paper's mathematical content: that `lenience=1` reduces to the
 lossless rule, that `cos_lambda=0` collapses to the draft, that SpecCascade with
 threshold 0 accepts everything, and that the lenience overshoot ceiling holds.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 This codebase builds on [EAGLE](https://github.com/SafeAILab/EAGLE) (the
 vendored draft-model implementation under `EAGLE/`) and is engineered in the
