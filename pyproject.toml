@@ -63,10 +63,7 @@ dev = [
 # Everything.
 all = ["sympy", "evalplus", "pytest", "pre-commit", "black", "isort", "ruff", "autoflake"]
 
-[project.urls]
-Homepage = "https://github.com/ZhouYuxuanYX/Fast-HSD"
-Repository = "https://github.com/ZhouYuxuanYX/Fast-HSD"
-Issues = "https://github.com/ZhouYuxuanYX/Fast-HSD/issues"
+
 
 [project.scripts]
 # Single CLI entry point — replaces the scattered eval_*.py scripts.
