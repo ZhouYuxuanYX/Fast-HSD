@@ -41,25 +41,6 @@ acceptance rule to accept more draft tokens — trading a little output quality 
 of speed. A growing zoo of such methods has appeared, each with its own framing and
 hyperparameters, making them hard to compare.
 
-The accompanying [paper](_NeurIPS_2026__FSD.pdf) argues that existing work *overstates*
-the advantages of these methods under curated settings — selective hyperparameters or
-easy benchmarks — which hides the true speed–quality trade-off. Through a principled
-analysis of the distributions each method induces, the paper shows that the zoo of
-seemingly distinct approaches collapses into **two families**, each with its own
-takeaway:
-
-- ** Truncation-based verification** — SpecCascade, Medusa typical-acceptance. **Pitfall:**
-  quality can degrade *significantly* versus the **true truncation-sampling baseline**,
-  because prior work compares against the unmodified target distribution and so misses the
-  distributional distortion these methods introduce.
-- ** Collaborative verification** — CoS, Lenience. **Principle:** controlling the
-  *overshoot* of draft probabilities relative to target probabilities is essential to
-  prevent low-quality outputs.
-
-Fast-HSD ships this analysis as runnable code: the acceptance rules as importable
-functions, the transformers patches that implement them, and a four-benchmark diagnostic
-harness designed to expose — rather than hide — the speed–quality trade-off.
-
 ## Highlights
 
 - **One package, one CLI.** `pip install -e .` then `fast-hsd-eval --benchmark math --method lenience --param 0.4 ...` — no more copy-files-into-site-packages dance.
@@ -380,10 +361,6 @@ team's training framework. We thank the authors of the methods we evaluate —
 SpecCascade, Medusa, CoS, and the speculative-decoding lenience formulation —
 for releasing high-quality reference implementations.
 
-## News
-
-- **2026-05**: Public refactor (`refactor/full`) — SpecForge-style packagization, symlink-sync patch installer, runtime patcher fallback, unified CLI with in-process scoring across all four benchmarks, per-run output directories, CI.
-- **2026-03**: Initial anonymous release at `anonymous.4open.science/r/Fast-HSD-E6AD/`.
 
 ## License
 
