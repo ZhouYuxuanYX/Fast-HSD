@@ -1,9 +1,5 @@
 # EAGLE-3 path fix (refactor/full)
 
-**Commit:** `5131878` — *"Fix EAGLE-3 path: call eagenerate instead of HF assisted-generation"*
-**Files:** `fast_hsd/benchmarks/base.py`, `fast_hsd/cli.py`, `fast_hsd/eagle/runner.py`
-**Status:** pushed to `origin` (Qifeng-Wu99/fast-hsd-private) and `upstream` (ZhouYuxuanYX/Fast-HSD), branch `refactor/full`.
-
 ## Symptom
 
 The refactored `fast-hsd-eval --use-eagle3` produced EAGLE-3 results that diverged
@@ -99,7 +95,6 @@ tree drafting is now actually running. Residual differences:
 
 **Latest (refactor, env `fsd`):**
 ```bash
-HF_HOME=/work/hdd/befh/qwu4/ckpt/hf_cache \
 fast-hsd-eval --benchmark bfcl --use-eagle3 --method baseline \
   --target-model meta-llama/Llama-3.1-8B-Instruct \
   --draft-model  yuhuili/EAGLE3-LLaMA3.1-Instruct-8B \
@@ -112,7 +107,6 @@ fast-hsd-eval --benchmark bfcl --use-eagle3 --method baseline \
 --num-choices 2 ...` then `python EAGLE/scripts/eval_bfcl_eagle.py <answers>.jsonl`.
 
 ### Gotchas observed while reproducing
-- Models load from `HF_HOME=/work/hdd/befh/qwu4/ckpt/hf_cache` (HDD — ~7 min cold load).
 - The legacy `gen_ea_answer_*.py` needs `shortuuid` and `fastchat`, absent from
   the `llm` env. Do **not** install them there — shim via `PYTHONPATH`
   (faithful reimpls of `shortuuid.uuid` and
