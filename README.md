@@ -61,7 +61,6 @@ conda create -n fsd python=3.8.20 -y
 conda activate fsd
 
 # 2. Install the package + dev tools.
-git clone https://anonymous.4open.science/anonymize/Fast-HSD-E6AD
 cd Fast-HSD
 pip install -e ".[dev]"
 
