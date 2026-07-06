@@ -10,15 +10,7 @@ readme = "README.md"
 requires-python = "==3.8.20"
 license = { text = "Apache-2.0" }
 authors = [
-    { name = "Yuxuan Zhou" },
-    { name = "Tianyu Wang" },
-    { name = "Qifeng Wu" },
-    { name = "Fengyi Wu" },
-    { name = "Heng Li" },
-    { name = "Zikai Xiao" },
-    { name = "Wenbin Wang" },
-    { name = "Junyuan Shang" },
-    { name = "Zhi-Qi Cheng" },
+    { name = "Anonymous Authors"  },
 ]
 keywords = [
     "speculative decoding",
